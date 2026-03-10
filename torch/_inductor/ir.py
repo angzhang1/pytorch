@@ -9553,10 +9553,28 @@ class StorageBox(MutableBox):
                 heavy_ops = ["exp", "sigmoid"]  # a list of heavy ops
                 if any(x in opcount.used_ops for x in heavy_ops):
                     return True
-            return (
-                self.num_reads() > config.realize_reads_threshold
-                or self.has_large_inner_fn()
-            )
+            num_reads = self.num_reads()
+            if num_reads > config.realize_reads_threshold:
+                return True
+            if self.has_large_inner_fn():
+                return True
+            # Size-aware cost model: compare total memory traffic of inlining
+            # (each user reloads all inputs) vs materializing (load inputs
+            # once, write output once, each user reads the output).
+            # This naturally ignores scalar/small reads and focuses on the
+            # large tensor reads that dominate bandwidth.
+            read_bytes = [
+                V.graph.get_dep_size_hint(dep)
+                for dep in self.get_reads()
+            ]
+            if read_bytes:
+                total_read = sum(read_bytes)
+                output_write = V.graph.sizevars.size_hint(
+                    self.data.get_numel()
+                ) * get_dtype_size(self.data.get_dtype())
+                inline_cost = total_read * users
+                realize_cost = total_read + output_write * (1 + users)
+                return realize_cost <= inline_cost
         return False
 
     def mark_reuse(self, users: int) -> None:
