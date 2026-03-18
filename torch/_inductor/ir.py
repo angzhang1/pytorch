@@ -9553,16 +9553,24 @@ class StorageBox(MutableBox):
                 heavy_ops = ["exp", "sigmoid"]  # a list of heavy ops
                 if any(x in opcount.used_ops for x in heavy_ops):
                     return True
-            num_reads = self.num_reads()
-            if num_reads > config.realize_reads_threshold:
-                return True
             if self.has_large_inner_fn():
                 return True
-            # Cost model: inlining duplicates all reads across each user;
-            # materializing adds one write but each user reads one buffer.
-            # Break ties toward materializing to prevent cascading read
-            # accumulation in chains (e.g. residual adds in transformers).
-            return num_reads * users >= num_reads + 1 + users
+            # Size-aware cost model comparing total memory traffic:
+            #   Inline:      read_bytes * users
+            #   Materialize: read_bytes + output_bytes * (1 + users)
+            # This naturally handles broadcast reads (small buffers are
+            # cheap to re-read) and dtype promotions (fp32 outputs cost
+            # more to write than bf16 inputs cost to read).
+            read_bytes = sum(
+                V.graph.get_dep_size_hint(dep) for dep in self.get_reads()
+            )
+            output_numel = self.data.get_numel()
+            output_bytes = V.graph.sizevars.size_hint(output_numel) * self.data.dtype.itemsize
+            if read_bytes > 0 and output_bytes > 0:
+                return read_bytes * (users - 1) >= output_bytes * (
+                    1 + users
+                )
+            return self.num_reads() > config.realize_reads_threshold
         return False
 
     def mark_reuse(self, users: int) -> None:
