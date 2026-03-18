@@ -9561,15 +9561,13 @@ class StorageBox(MutableBox):
             # This naturally handles broadcast reads (small buffers are
             # cheap to re-read) and dtype promotions (fp32 outputs cost
             # more to write than bf16 inputs cost to read).
-            read_bytes = sum(
-                V.graph.get_dep_size_hint(dep) for dep in self.get_reads()
-            )
+            read_bytes = sum(V.graph.get_dep_size_hint(dep) for dep in self.get_reads())
             output_numel = self.data.get_numel()
-            output_bytes = V.graph.sizevars.size_hint(output_numel) * self.data.dtype.itemsize
+            output_bytes = (
+                V.graph.sizevars.size_hint(output_numel) * self.data.dtype.itemsize
+            )
             if read_bytes > 0 and output_bytes > 0:
-                return read_bytes * (users - 1) >= output_bytes * (
-                    1 + users
-                )
+                return read_bytes * (users - 1) >= output_bytes * (1 + users)
             return self.num_reads() > config.realize_reads_threshold
         return False
 
