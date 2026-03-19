@@ -9556,18 +9556,19 @@ class StorageBox(MutableBox):
             if self.has_large_inner_fn():
                 return True
             # Size-aware cost model comparing total memory traffic:
-            #   Inline:      read_bytes * users
-            #   Materialize: read_bytes + output_bytes * (1 + users)
+            #   Inline:      total_read_bytes * users
+            #   Materialize: total_read_bytes + output_bytes * (1 + users)
             # This naturally handles broadcast reads (small buffers are
             # cheap to re-read) and dtype promotions (fp32 outputs cost
             # more to write than bf16 inputs cost to read).
-            read_bytes = sum(V.graph.get_dep_size_hint(dep) for dep in self.get_reads())
-            output_numel = self.data.get_numel()
-            output_bytes = (
-                V.graph.sizevars.size_hint(output_numel) * self.data.dtype.itemsize
-            )
-            if read_bytes > 0 and output_bytes > 0:
-                return read_bytes * (users - 1) >= output_bytes * (1 + users)
+            total_read_bytes = sum(V.graph.get_dep_size_hint(dep) for dep in self.get_reads())
+            output_bytes = V.graph.sizevars.optimization_hint(
+                self.data.get_numel(), fallback=0
+            ) * self.data.dtype.itemsize
+            if total_read_bytes > 0 and output_bytes > 0:
+                return total_read_bytes * (users - 1) >= output_bytes * (
+                    1 + users
+                )
             return self.num_reads() > config.realize_reads_threshold
         return False
 
