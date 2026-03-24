@@ -6,6 +6,7 @@ import functools
 import torch
 import torch.cuda
 from torch.testing._internal.common_utils import LazyVal, TEST_NUMBA, TEST_WITH_ROCM, TEST_CUDA, IS_WINDOWS, IS_MACOS, TEST_XPU
+from torch.utils._triton import has_triton
 import inspect
 import contextlib
 import os
@@ -483,6 +484,13 @@ def xfailIfSM12X(func):
 def xfailIfDistributedNotSupported(func):
     return func if not (IS_MACOS or IS_JETSON) else unittest.expectedFailure(func)
 
+
+def xfailIfSM89OrLaterOnWindows(reason="Expected failure on Windows with CUDA SM >= 8.9"):
+    """Mark the test as expected failure when on Windows and CUDA SM >= 8.9."""
+    def decorator(test_fn):
+        return test_fn if not (IS_WINDOWS and SM89OrLater) else unittest.expectedFailure(test_fn)
+    return decorator
+
 # When using nvcc from the CUDA toolkit its versuib must be at least the one from ptxas bundled with Triton
 TRITON_PTXAS_VERSION = (12, 8)
 requires_triton_ptxas_compat = unittest.skipIf(not torch.version.xpu
@@ -494,3 +502,51 @@ requires_triton_ptxas_compat = unittest.skipIf(not torch.version.xpu
 if not CUDA_ALREADY_INITIALIZED_ON_IMPORT:
     if torch.cuda.is_initialized():
         raise AssertionError("CUDA should not be initialized on import")
+
+
+def _is_cuda_device_type(dev) -> bool:
+    if isinstance(dev, torch.device):
+        return dev.type == "cuda"
+    if isinstance(dev, str):
+        return dev == "cuda" or dev.startswith("cuda:")
+    return False
+
+
+def _device_spec_from_test_call(args: tuple, kwargs: dict):
+    """device / devices from device-type tests"""
+    if "device" in kwargs:
+        return kwargs["device"]
+    if "devices" in kwargs:
+        return kwargs["devices"]
+    return None
+
+
+def _device_spec_is_cuda(device_spec) -> bool:
+    if device_spec is None:
+        return False
+    if isinstance(device_spec, (list, tuple)):
+        return any(_is_cuda_device_type(d) for d in device_spec)
+    return _is_cuda_device_type(device_spec)
+
+
+def xfailIfNoTriton(test_func):
+    """Run test normally if triton is present
+    Otherwise, mark as xfail only on cuda devices.
+    Non cuda devices may not need triton. CPU falls back to openmp"""
+    @functools.wraps(test_func)
+    def wrapper(*args, **kwargs):
+        if has_triton():
+            return test_func(*args, **kwargs)
+
+        spec = _device_spec_from_test_call(args, kwargs)
+        if spec is not None and not _device_spec_is_cuda(spec):
+            return test_func(*args, **kwargs)
+
+        try:
+            test_func(*args, **kwargs)
+        except Exception as e:
+            print(f"Expected failure for {test_func.__name__} ({spec!r}): {e}")
+            return
+        assert False, f"Test {test_func.__name__} was expected to fail but succeeded."
+
+    return wrapper

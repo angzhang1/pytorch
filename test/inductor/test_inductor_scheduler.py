@@ -11,7 +11,7 @@ from torch._dynamo.utils import counters
 from torch._inductor.dependencies import Dep, ReadWrites
 from torch._inductor.scheduler import BaseSchedulerNode, Scheduler
 from torch._inductor.utils import fresh_inductor_cache
-from torch.testing._internal.common_cuda import SM70OrLater
+from torch.testing._internal.common_cuda import SM70OrLater, xfailIfNoTriton
 from torch.testing._internal.common_device_type import (
     dtypes,
     instantiate_device_type_tests,
@@ -80,6 +80,7 @@ def _test_cases(device, dtype):
 class TestScheduler(TestCase):
     @dtypes(torch.float, torch.float16)
     @skipCUDAIf(not SM70OrLater, "GPU capability is < SM70")
+    @xfailIfNoTriton
     def test_disable_get_estimated_runtime_logging(self, device, dtype):
         if device == "cpu":
             return
@@ -98,6 +99,7 @@ class TestScheduler(TestCase):
             metrics.reset()
         torch._logging.set_logs()
 
+    @xfailIfNoTriton
     @skipIfXpu(
         msg="InvalidModule: Invalid SPIR-V module, "
         "https://github.com/intel/torch-xpu-ops/issues/2329"
@@ -220,6 +222,7 @@ class TestScheduler(TestCase):
         node.read_writes = read_writes
         return node
 
+    @xfailIfNoTriton
     @onlyCUDA
     def test_index_add_fusion_prevented(self):
         """
@@ -260,6 +263,7 @@ class TestScheduler(TestCase):
             f"compiled={compiled_result.mean().item():.6f}",
         )
 
+    @xfailIfNoTriton
     @onlyCUDA
     def test_atomic_add_no_fusion_correctness(self):
         """

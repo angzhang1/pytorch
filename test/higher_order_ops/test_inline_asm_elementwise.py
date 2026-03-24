@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import torch
 from torch._higher_order_ops.inline_asm_elementwise import inline_asm_elementwise
-from torch.testing._internal.common_cuda import SM70OrLater
+from torch.testing._internal.common_cuda import has_triton, SM70OrLater, xfailIfNoTriton
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
@@ -254,6 +254,10 @@ class TestInlineAsmElementwise(TestCase):
                 pack=tc.pack,
             )
 
+        # This test always runs torch.compile(inductor); Inductor needs Triton for CUDA.
+        if not has_triton():
+            self.skipTest("Requires Triton")
+
         torch._dynamo.reset()
         compiled_result = torch.compile(fn, backend="inductor")(*inputs)
 
@@ -286,6 +290,8 @@ class TestInlineAsmElementwise(TestCase):
             )
 
         if tc.compile_only:
+            if not has_triton():
+                self.skipTest("torch.compile requires Triton")
             torch._dynamo.reset()
             result = torch.compile(fn, backend="inductor")(*inputs)
         else:
@@ -370,6 +376,7 @@ class TestInlineAsmElementwiseEdgeCases(TestCase):
         self.assertEqual(result.shape, x.shape)
         self.assertEqual(result, x)
 
+    @xfailIfNoTriton
     def test_composition_with_pytorch_ops(self):
         def fn(x, y):
             z = x * 2
@@ -423,6 +430,7 @@ class TestInlineAsmElementwiseEdgeCases(TestCase):
         self.assertEqual(eager_result.shape, fake_result.shape)
         self.assertEqual(eager_result.stride(), fake_result.stride())
 
+    @xfailIfNoTriton
     def test_dynamic_shapes(self):
         def fn(x, y):
             return inline_asm_elementwise(
@@ -445,6 +453,7 @@ class TestInlineAsmElementwiseEdgeCases(TestCase):
 
 @unittest.skipIf(not TEST_CUDA, "CUDA not available")
 @unittest.skipIf(not SM70OrLater, "Requires SM70+")
+@xfailIfNoTriton
 class TestInlineAsmPackPadding(TestCase):
     """Test that pack padding works when block size < pack."""
 

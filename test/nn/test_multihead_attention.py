@@ -7,6 +7,7 @@ import unittest.mock as mock
 import torch
 import torch.nn as nn
 from torch.nn import MultiheadAttention
+from torch.testing._internal.common_cuda import xfailIfNoTriton
 from torch.testing._internal.common_device_type import (
     dtypes,
     instantiate_device_type_tests,
@@ -951,6 +952,7 @@ class TestMultiheadAttentionNNDeviceType(NNTestCase):
         mha(query, query, query)
 
     @dtypes(torch.double)
+    @xfailIfNoTriton
     def test_fast_path_check_with_mask_does_not_break_in_compile(self, device, dtype):
         # Test TransformerEncoder fast path determination with src_key_padding_mask set.
         # Specifically, ensure the mask left-align check doesn't fail in torch.compile.
