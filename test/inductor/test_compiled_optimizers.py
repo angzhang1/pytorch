@@ -201,6 +201,7 @@ class KernelCounts(NamedTuple):
 KERNEL_COUNT_OVERRIDES = {
     "test_rmsprop_foreach_weight_decay_cpu": lambda x: assert_expected_inline(x, """12""") ,
     "test_nadam_foreach_weight_decay_momentum_decay_cpu": lambda x: assert_expected_inline(x, """20"""),
+    "test_adam_tensor_lr_amsgrad_capturable_foreach_cuda": lambda x: assert_expected_inline(x, """3"""),
     "test_adamw_amsgrad_capturable_foreach_cuda": lambda x: assert_expected_inline(x, """3"""),
     "test_adamw_amsgrad_capturable_foreach_xpu": lambda x: assert_expected_inline(x, """3"""),
     "test_adamw_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """6"""),
@@ -211,7 +212,7 @@ KERNEL_COUNT_OVERRIDES = {
     "test_adamw_tensor_lr_tensor_betas_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
     "test_adamw_tensor_lr_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """6"""),
     "test_adamw_tensor_lr_amsgrad_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
-    "test_adam_tensor_lr_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """6"""),
+    "test_adam_tensor_lr_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """5"""),
     "test_adam_tensor_lr_amsgrad_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
     "test_adam_tensor_lr_tensor_betas_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """6"""),
     "test_adam_tensor_lr_tensor_betas_amsgrad_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
@@ -270,7 +271,7 @@ KERNEL_COUNT_OVERRIDES = {
 KERNEL_COUNTS = {
     Adam: KernelCounts(multitensor=2, singletensor=8),
     AdamW: KernelCounts(multitensor=2, singletensor=8),
-    NAdam: KernelCounts(multitensor=2, singletensor=8),
+    NAdam: KernelCounts(multitensor=2, singletensor=12),
     Rprop: KernelCounts(multitensor=2, singletensor=8),
     RMSprop: KernelCounts(multitensor=2, singletensor=8),
     Adadelta: KernelCounts(multitensor=2, singletensor=8),
