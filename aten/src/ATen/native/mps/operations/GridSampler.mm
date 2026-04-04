@@ -11,6 +11,7 @@
 #else
 #include <ATen/ops/grid_sampler_2d.h>
 #include <ATen/ops/grid_sampler_2d_native.h>
+#include <ATen/ops/grid_sampler_3d_backward_native.h>
 #include <ATen/ops/grid_sampler_3d_native.h>
 #endif
 
@@ -142,9 +143,7 @@ static void grid_sampler_3d_mps_impl(Tensor& output,
 
   switch (interpolation_mode) {
     case GridSamplerInterpolation::Bilinear:
-      break;
     case GridSamplerInterpolation::Nearest:
-      TORCH_CHECK(false, op_name, ": Unsupported Nearest interpolation");
       break;
     case GridSamplerInterpolation::Bicubic:
       TORCH_CHECK(false, op_name, ": Unsupported Bicubic interpolation");
@@ -172,14 +171,16 @@ static void grid_sampler_3d_mps_impl(Tensor& output,
     params.grid_strides[dim] = safe_downcast<int32_t, int64_t>(grid.stride(dim));
   }
 
-  auto num_threads = output.numel();
+  auto num_threads = input_size[0] * grid_size[1] * grid_size[2] * grid_size[3];
   MPSStream* mpsStream = getCurrentMPSStream();
 
   dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
     @autoreleasepool {
       id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
-      auto pso = lib.getPipelineStateForFunc(
-          fmt::format("grid_sampler_3d_{}_{}", padding_to_string(padding_mode), scalarToMetalTypeString(input)));
+      auto pso = lib.getPipelineStateForFunc(fmt::format("grid_sampler_3d_{}_{}_{}",
+                                                         interp_to_string(interpolation_mode),
+                                                         padding_to_string(padding_mode),
+                                                         scalarToMetalTypeString(input)));
 
       getMPSProfiler().beginProfileKernel(pso, op_name, {input, grid});
       [computeEncoder setComputePipelineState:pso];
@@ -221,6 +222,174 @@ Tensor grid_sampler_3d_mps(const Tensor& input,
                                 /*sampler_dims=*/3,
                                 /*op_name=*/"grid_sampler_3d");
   return output;
+}
+
+std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_output,
+                                                        const Tensor& input,
+                                                        const Tensor& grid,
+                                                        int64_t interpolation_mode,
+                                                        int64_t padding_mode,
+                                                        bool align_corners,
+                                                        std::array<bool, 2> output_mask) {
+  using namespace mps;
+  check_grid_sampler_common(input, grid);
+  check_grid_sampler_3d(input, grid, interpolation_mode);
+
+  TORCH_CHECK_NOT_IMPLEMENTED(interpolation_mode == 0 || interpolation_mode == 1,
+                              "grid_sampler_3d backward on MPS only supports bilinear and nearest interpolation");
+
+  TORCH_CHECK(input.scalar_type() == grid.scalar_type(),
+              "expected input and grid to have the same type, but got ",
+              input.scalar_type(),
+              " and ",
+              grid.scalar_type());
+
+  auto orig_dtype = input.scalar_type();
+  auto input_requires_grad = output_mask[0];
+  auto grid_requires_grad = output_mask[1];
+  int32_t interp_mode = static_cast<int32_t>(interpolation_mode);
+  int32_t pad_mode = static_cast<int32_t>(padding_mode);
+
+  // backward_input uses atomic<float> (Metal lacks atomic<half>/atomic<bfloat>),
+  // so grad_input is always float32 and converted back after the kernel.
+  Tensor grad_input;
+  if (input_requires_grad) {
+    grad_input = at::zeros(input.sizes(), input.options().dtype(at::kFloat));
+  }
+  auto grad_grid = grid_requires_grad ? at::empty_like(grid, MemoryFormat::Contiguous) : at::Tensor();
+
+  const Tensor& input_contiguous = input.is_contiguous() ? input : input.contiguous();
+  const Tensor& grid_contiguous = grid.is_contiguous() ? grid : grid.contiguous();
+  const Tensor& grad_output_contiguous = grad_output.is_contiguous() ? grad_output : grad_output.contiguous();
+
+  auto N = input_contiguous.size(0);
+  auto C = input_contiguous.size(1);
+  auto in_D = input_contiguous.size(2);
+  auto in_H = input_contiguous.size(3);
+  auto in_W = input_contiguous.size(4);
+  auto out_D = grid_contiguous.size(1);
+  auto out_H = grid_contiguous.size(2);
+  auto out_W = grid_contiguous.size(3);
+
+  std::array<uint64_t, 5> input_sizes = {static_cast<uint64_t>(N),
+                                         static_cast<uint64_t>(C),
+                                         static_cast<uint64_t>(in_D),
+                                         static_cast<uint64_t>(in_H),
+                                         static_cast<uint64_t>(in_W)};
+  std::array<uint64_t, 5> output_sizes = {static_cast<uint64_t>(N),
+                                          static_cast<uint64_t>(C),
+                                          static_cast<uint64_t>(out_D),
+                                          static_cast<uint64_t>(out_H),
+                                          static_cast<uint64_t>(out_W)};
+  std::array<uint64_t, 5> input_strides = {static_cast<uint64_t>(input_contiguous.stride(0)),
+                                           static_cast<uint64_t>(input_contiguous.stride(1)),
+                                           static_cast<uint64_t>(input_contiguous.stride(2)),
+                                           static_cast<uint64_t>(input_contiguous.stride(3)),
+                                           static_cast<uint64_t>(input_contiguous.stride(4))};
+  std::array<uint64_t, 5> grid_strides = {static_cast<uint64_t>(grid_contiguous.stride(0)),
+                                          static_cast<uint64_t>(grid_contiguous.stride(1)),
+                                          static_cast<uint64_t>(grid_contiguous.stride(2)),
+                                          static_cast<uint64_t>(grid_contiguous.stride(3)),
+                                          static_cast<uint64_t>(grid_contiguous.stride(4))};
+  std::array<uint64_t, 5> grad_output_strides = {static_cast<uint64_t>(grad_output_contiguous.stride(0)),
+                                                 static_cast<uint64_t>(grad_output_contiguous.stride(1)),
+                                                 static_cast<uint64_t>(grad_output_contiguous.stride(2)),
+                                                 static_cast<uint64_t>(grad_output_contiguous.stride(3)),
+                                                 static_cast<uint64_t>(grad_output_contiguous.stride(4))};
+
+  MPSStream* mpsStream = getCurrentMPSStream();
+
+  bool run_grad_input = input_requires_grad;
+  bool run_grad_grid = grid_requires_grad && interp_mode != 1;
+
+  if (grid_requires_grad && interp_mode == 1) {
+    grad_grid.zero_();
+  }
+
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+
+      if (run_grad_input) {
+        auto gradInputPSO = lib.getPipelineStateForFunc(
+            fmt::format("grid_sampler_3d_backward_input_{}", scalarToMetalTypeString(input)));
+
+        getMPSProfiler().beginProfileKernel(
+            gradInputPSO, "grid_sampler_3d_backward_input", {grad_output_contiguous, grid_contiguous, grad_input});
+
+        [computeEncoder setComputePipelineState:gradInputPSO];
+
+        std::array<uint64_t, 5> grad_input_strides = {static_cast<uint64_t>(grad_input.stride(0)),
+                                                      static_cast<uint64_t>(grad_input.stride(1)),
+                                                      static_cast<uint64_t>(grad_input.stride(2)),
+                                                      static_cast<uint64_t>(grad_input.stride(3)),
+                                                      static_cast<uint64_t>(grad_input.stride(4))};
+
+        mtl_setArgs(computeEncoder,
+                    grad_output_contiguous,
+                    grid_contiguous,
+                    grad_input,
+                    interp_mode,
+                    pad_mode,
+                    align_corners,
+                    input_sizes,
+                    output_sizes,
+                    grad_input_strides,
+                    grid_strides,
+                    grad_output_strides);
+
+        MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
+        MTLSize threadsPerGrid = MTLSizeMake(out_W, out_H * out_D, N);
+        [computeEncoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
+
+        getMPSProfiler().endProfileKernel(gradInputPSO);
+      }
+
+      if (run_grad_grid) {
+        auto gradGridPSO = lib.getPipelineStateForFunc(
+            fmt::format("grid_sampler_3d_backward_grid_{}", scalarToMetalTypeString(input)));
+
+        getMPSProfiler().beginProfileKernel(gradGridPSO,
+                                            "grid_sampler_3d_backward_grid",
+                                            {grad_output_contiguous, input_contiguous, grid_contiguous, grad_grid});
+
+        [computeEncoder setComputePipelineState:gradGridPSO];
+
+        std::array<uint64_t, 5> grad_grid_strides = {static_cast<uint64_t>(grad_grid.stride(0)),
+                                                     static_cast<uint64_t>(grad_grid.stride(1)),
+                                                     static_cast<uint64_t>(grad_grid.stride(2)),
+                                                     static_cast<uint64_t>(grad_grid.stride(3)),
+                                                     static_cast<uint64_t>(grad_grid.stride(4))};
+
+        mtl_setArgs(computeEncoder,
+                    grad_output_contiguous,
+                    input_contiguous,
+                    grid_contiguous,
+                    grad_grid,
+                    interp_mode,
+                    pad_mode,
+                    align_corners,
+                    input_sizes,
+                    output_sizes,
+                    input_strides,
+                    grad_grid_strides,
+                    grid_strides,
+                    grad_output_strides);
+
+        MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
+        MTLSize threadsPerGrid = MTLSizeMake(out_W, out_H * out_D, N);
+        [computeEncoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
+
+        getMPSProfiler().endProfileKernel(gradGridPSO);
+      }
+    }
+  });
+
+  if (input_requires_grad && orig_dtype != ScalarType::Float) {
+    grad_input = grad_input.to(orig_dtype);
+  }
+
+  return std::make_tuple(std::move(grad_input), std::move(grad_grid));
 }
 
 } // namespace at::native

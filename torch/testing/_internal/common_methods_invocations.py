@@ -22197,10 +22197,6 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip('Skipped!'), device_type='cuda'),
             DecorateInfo(unittest.skip('Skipped!'), device_type='xpu'),
             DecorateInfo(unittest.skip('Skipped!'), device_type='meta'),
-            # Error: The operator 'aten::grid_sampler_3d_backward' is not currently implemented for the MPS device.
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
             DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-4, rtol=1e-4),
                                             torch.float16: tol(atol=1e-4, rtol=1e-4),
                                             torch.bfloat16: tol(atol=1e-4, rtol=1e-4)}),
