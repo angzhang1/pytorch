@@ -409,9 +409,9 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
   }
   auto grad_grid = grid_requires_grad ? at::empty_like(grid, MemoryFormat::Contiguous) : at::Tensor();
 
-  const Tensor& input_contiguous = input.is_contiguous() ? input : input.contiguous();
-  const Tensor& grid_contiguous = grid.is_contiguous() ? grid : grid.contiguous();
-  const Tensor& grad_output_contiguous = grad_output.is_contiguous() ? grad_output : grad_output.contiguous();
+  const auto& input_contiguous = input.contiguous();
+  const auto& grid_contiguous = grid.contiguous();
+  const auto& grad_output_contiguous = grad_output.contiguous();
 
   auto N = input_contiguous.size(0);
   auto C = input_contiguous.size(1);
@@ -506,12 +506,6 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
 
         [computeEncoder setComputePipelineState:gradGridPSO];
 
-        std::array<uint64_t, 5> grad_grid_strides = {static_cast<uint64_t>(grad_grid.stride(0)),
-                                                     static_cast<uint64_t>(grad_grid.stride(1)),
-                                                     static_cast<uint64_t>(grad_grid.stride(2)),
-                                                     static_cast<uint64_t>(grad_grid.stride(3)),
-                                                     static_cast<uint64_t>(grad_grid.stride(4))};
-
         mtl_setArgs(computeEncoder,
                     grad_output_contiguous,
                     input_contiguous,
@@ -523,7 +517,7 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
                     input_sizes,
                     output_sizes,
                     input_strides,
-                    grad_grid_strides,
+                    grad_grid.strides(),
                     grid_strides,
                     grad_output_strides);
 
