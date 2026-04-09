@@ -1058,6 +1058,7 @@ def _check_arg_device(x: torch.Tensor | None) -> bool:
         return x.device.type in [
             "cpu",
             "cuda",
+            "xpu",
             torch.utils.backend_registration._privateuse1_backend_name,
         ]
     return True
@@ -1391,7 +1392,7 @@ class MultiheadAttention(Module):
                 "supplying both src_key_padding_mask and src_mask at the same time \
                                  is not supported with NestedTensor input"
             )
-        elif torch.is_autocast_enabled():
+        elif torch.is_autocast_enabled(query.device.type):
             why_not_fast_path = "autocast is enabled"
 
         fast_path_blocked_by_tracing = False
