@@ -171,7 +171,7 @@ static void grid_sampler_3d_mps_impl(Tensor& output,
     params.grid_strides[dim] = safe_downcast<int32_t, int64_t>(grid.stride(dim));
   }
 
-  auto num_threads = input_size[0] * grid_size[1] * grid_size[2] * grid_size[3];
+  auto num_threads = output.numel();
   MPSStream* mpsStream = getCurrentMPSStream();
 
   dispatch_sync_with_rethrow(mpsStream->queue(), ^() {

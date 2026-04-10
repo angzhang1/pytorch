@@ -594,8 +594,7 @@ struct Nearest3D {
   }
 };
 
-// 3D grid sampler kernel: one thread per spatial position (n, d, h, w),
-// loops over channels C. Grid coordinates are read once and reused.
+// 3D grid sampler kernel: one thread per output element (n, c, d, h, w).
 template <typename Interp, typename T>
 kernel void grid_sampler_3d(
     device T* output [[buffer(0)]],
@@ -633,32 +632,29 @@ kernel void grid_sampler_3d(
   int32_t w = tid % out_W;
   int32_t h = (tid / out_W) % out_H;
   int32_t d = (tid / (out_W * out_H)) % out_D;
-  int32_t n = tid / (out_W * out_H * out_D);
+  int32_t c = (tid / (out_W * out_H * out_D)) % C;
+  int32_t n = tid / (out_W * out_H * out_D * C);
 
   auto grid_ptr = grid + n * grid_sN + d * grid_sD + h * grid_sH + w * grid_sW;
   opmath_t<T> ix = static_cast<opmath_t<T>>(grid_ptr[0]);
   opmath_t<T> iy = static_cast<opmath_t<T>>(grid_ptr[grid_sCoor]);
   opmath_t<T> iz = static_cast<opmath_t<T>>(grid_ptr[2 * grid_sCoor]);
 
-  auto inp_ptr_N = input + n * inp_sN;
-  auto out_ptr = output + n * out_sN + d * out_sD + h * out_sH + w * out_sW;
-
-  for (int32_t c = 0; c < C; ++c) {
-    auto result = Interp::template interpolate<T>(
-        inp_ptr_N,
-        ix,
-        iy,
-        iz,
-        inp_D,
-        inp_H,
-        inp_W,
-        inp_sD,
-        inp_sH,
-        inp_sW,
-        align_corners);
-    out_ptr[c * out_sC] = result;
-    inp_ptr_N += inp_sC;
-  }
+  auto inp_ptr_NC = input + n * inp_sN + c * inp_sC;
+  auto result = Interp::template interpolate<T>(
+      inp_ptr_NC,
+      ix,
+      iy,
+      iz,
+      inp_D,
+      inp_H,
+      inp_W,
+      inp_sD,
+      inp_sH,
+      inp_sW,
+      align_corners);
+  output[n * out_sN + c * out_sC + d * out_sD + h * out_sH + w * out_sW] =
+      result;
 }
 
 // Padding mode constants (must match GridSamplerPadding enum)
