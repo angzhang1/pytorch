@@ -835,7 +835,6 @@ if torch.backends.mps.is_available():
             # Float32 forward is tested, and half precision is covered by
             # test_grid_sampler_3d_half_precision (MPS half vs MPS float32).
             "nn.functional.grid_sample": [torch.float16, torch.bfloat16],
-            "grid_sampler_2d": [torch.float16, torch.bfloat16],
             "grid_sampler_3d": [torch.float16, torch.bfloat16],
         }
 
@@ -932,6 +931,8 @@ if torch.backends.mps.is_available():
             "scalar_tensor": [torch.float16, torch.float32],
             "cdist": None,
             "masked.scatter": [torch.float16, torch.float32],
+            "grid_sampler_2d": None,
+            "nn.functional.grid_sample": None,  # 2D backward not implemented
             "igamma": None,  # currently not supported for any device
             "igammac": None,  # currently not supported for any device
             "special.i1": [torch.float16],  # "i1_backward" not implemented for 'Half'
@@ -995,7 +996,6 @@ if torch.backends.mps.is_available():
             # MPS uses float32 intermediates via opmath_t, CPU accumulates
             # in native float16, causing large divergence over many channels.
             "nn.functional.grid_sample": [torch.float16],
-            "grid_sampler_2d": [torch.float16],
             "grid_sampler_3d": [torch.float16],
         }
 
