@@ -124,9 +124,8 @@ bool isSortableListOfObjectsOrTuples(
     const IValue& v = ivalues.get(i);
     auto curr_type = v.type();
     if (*curr_type != *type) {
-      why_not << "Only values of same type can be compared. "
-              << "Found " << type->repr_str() << " and "
-              << curr_type->repr_str();
+      why_not << "Only values of same type can be compared. " << "Found "
+              << type->repr_str() << " and " << curr_type->repr_str();
       return false;
     }
   }
@@ -741,8 +740,7 @@ static const std::vector<OperatorGeneratorArgs> opGenArgs{
           push(stack, false);
 #else
           auto device_type_str = pop(stack).toStringRef();
-          at::DeviceType device_type =
-              at::Device(device_type_str).type();
+          at::DeviceType device_type = at::Device(device_type_str).type();
           bool enabled = at::autocast::is_autocast_enabled(device_type);
           push(stack, enabled);
 #endif
