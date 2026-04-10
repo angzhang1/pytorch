@@ -108,7 +108,7 @@ std::optional<AutocastScope> parseAutocast(
     TORCH_CHECK(
         dtype != c10::ScalarType::Undefined,
         "Autocast has invalid fast_dtype attribute");
-    if (device == "cuda" || device == "mps") {
+    if (device == "cuda" || device == "mps" || device == "xpu") {
       scope.context.gpu_enabled = enabled.value();
       scope.context.gpu_scalar_type = dtype;
     } else if (device == "cpu") {
@@ -351,7 +351,24 @@ void handleBlock(Block* block, AutocastContext initial_state) {
         break;
 
       case aten::is_autocast_enabled:
-        updateAutocastEnabledCheck(node, current_state().gpu_enabled);
+        if (node->schema().overload_name() == "device_type") {
+          // aten::is_autocast_enabled.device_type(str device_type) -> bool
+          // The device_type argument must be a string constant.
+          auto device_str = constant_as<std::string>(node->input(0));
+          if (device_str.has_value()) {
+            bool enabled = false;
+            const auto& s = device_str.value();
+            if (s == "cuda" || s == "mps" || s == "xpu") {
+              enabled = current_state().gpu_enabled;
+            } else if (s == "cpu") {
+              enabled = current_state().cpu_enabled;
+            }
+            updateAutocastEnabledCheck(node, enabled);
+          }
+        } else {
+          // aten::is_autocast_enabled() -> bool  (deprecated, CUDA-only)
+          updateAutocastEnabledCheck(node, current_state().gpu_enabled);
+        }
         break;
 
       case aten::is_autocast_cpu_enabled:
@@ -518,9 +535,12 @@ void Autocast(const std::shared_ptr<Graph>& graph) {
   GRAPH_DUMP("\nBefore Autocast: ", graph);
   if (autocastEnabled()) {
     AutocastContext init = {
-        at::autocast::is_autocast_enabled(at::kCUDA),
+        at::autocast::is_autocast_enabled(at::kCUDA) ||
+            at::autocast::is_autocast_enabled(at::kXPU),
         at::autocast::is_autocast_enabled(at::kCPU),
-        at::autocast::get_autocast_dtype(at::kCUDA),
+        at::autocast::is_autocast_enabled(at::kCUDA)
+            ? at::autocast::get_autocast_dtype(at::kCUDA)
+            : at::autocast::get_autocast_dtype(at::kXPU),
         at::autocast::get_autocast_dtype(at::kCPU)};
     handleBlock(graph->block(), init);
   }

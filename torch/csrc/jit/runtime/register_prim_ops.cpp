@@ -733,6 +733,22 @@ static const std::vector<OperatorGeneratorArgs> opGenArgs{
         },
         aliasAnalysisConservative()),
     OperatorGeneratorArgs(
+        TORCH_SELECTIVE_SCHEMA(
+            "aten::is_autocast_enabled.device_type(str device_type) -> bool"),
+        [](Stack& stack) {
+#if defined BUILD_LITE_INTERPRETER || defined C10_MOBILE
+          pop(stack);
+          push(stack, false);
+#else
+          auto device_type_str = pop(stack).toStringRef();
+          at::DeviceType device_type =
+              at::Device(device_type_str).type();
+          bool enabled = at::autocast::is_autocast_enabled(device_type);
+          push(stack, enabled);
+#endif
+        },
+        aliasAnalysisConservative()),
+    OperatorGeneratorArgs(
         TORCH_SELECTIVE_SCHEMA("aten::is_autocast_cpu_enabled() -> bool"),
         [](Stack& stack) {
 #if defined BUILD_LITE_INTERPRETER || defined C10_MOBILE
