@@ -271,34 +271,6 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
   auto out_H = grid_contiguous.size(2);
   auto out_W = grid_contiguous.size(3);
 
-  std::array<uint64_t, 5> input_sizes = {static_cast<uint64_t>(N),
-                                         static_cast<uint64_t>(C),
-                                         static_cast<uint64_t>(in_D),
-                                         static_cast<uint64_t>(in_H),
-                                         static_cast<uint64_t>(in_W)};
-  std::array<uint64_t, 5> output_sizes = {static_cast<uint64_t>(N),
-                                          static_cast<uint64_t>(C),
-                                          static_cast<uint64_t>(out_D),
-                                          static_cast<uint64_t>(out_H),
-                                          static_cast<uint64_t>(out_W)};
-  std::array<uint64_t, 5> input_strides = {static_cast<uint64_t>(input_contiguous.stride(0)),
-                                           static_cast<uint64_t>(input_contiguous.stride(1)),
-                                           static_cast<uint64_t>(input_contiguous.stride(2)),
-                                           static_cast<uint64_t>(input_contiguous.stride(3)),
-                                           static_cast<uint64_t>(input_contiguous.stride(4))};
-  std::array<uint64_t, 5> grid_strides = {static_cast<uint64_t>(grid_contiguous.stride(0)),
-                                          static_cast<uint64_t>(grid_contiguous.stride(1)),
-                                          static_cast<uint64_t>(grid_contiguous.stride(2)),
-                                          static_cast<uint64_t>(grid_contiguous.stride(3)),
-                                          static_cast<uint64_t>(grid_contiguous.stride(4))};
-  std::array<uint64_t, 5> grad_output_strides = {static_cast<uint64_t>(grad_output_contiguous.stride(0)),
-                                                 static_cast<uint64_t>(grad_output_contiguous.stride(1)),
-                                                 static_cast<uint64_t>(grad_output_contiguous.stride(2)),
-                                                 static_cast<uint64_t>(grad_output_contiguous.stride(3)),
-                                                 static_cast<uint64_t>(grad_output_contiguous.stride(4))};
-
-  MPSStream* mpsStream = getCurrentMPSStream();
-
   bool run_grad_input = input_requires_grad;
   bool run_grad_grid = grid_requires_grad && interp_mode != 1;
 
@@ -306,76 +278,68 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
     grad_grid.zero_();
   }
 
+  if (!run_grad_input && !run_grad_grid) {
+    return std::make_tuple(std::move(grad_input), std::move(grad_grid));
+  }
+
+  // The combined kernel needs valid buffer pointers for both outputs even when
+  // only one gradient is requested, so allocate 1-element dummies as needed.
+  auto grad_input_buf = run_grad_input ? grad_input : at::zeros({1}, input.options().dtype(at::kFloat));
+  auto grad_grid_buf = run_grad_grid ? grad_grid : at::empty({1}, grid.options());
+
+  GridSampler3DBackwardParams params;
+  params.interpolation_mode = interp_mode;
+  params.padding_mode = pad_mode;
+  params.align_corners = align_corners;
+  params.compute_grad_input = run_grad_input;
+  params.compute_grad_grid = run_grad_grid;
+  params.input_sizes = {safe_downcast<int32_t, int64_t>(N),
+                        safe_downcast<int32_t, int64_t>(C),
+                        safe_downcast<int32_t, int64_t>(in_D),
+                        safe_downcast<int32_t, int64_t>(in_H),
+                        safe_downcast<int32_t, int64_t>(in_W)};
+  params.output_sizes = {safe_downcast<int32_t, int64_t>(N),
+                         safe_downcast<int32_t, int64_t>(C),
+                         safe_downcast<int32_t, int64_t>(out_D),
+                         safe_downcast<int32_t, int64_t>(out_H),
+                         safe_downcast<int32_t, int64_t>(out_W)};
+  for (int i = 0; i < 5; i++) {
+    params.grid_strides[i] = safe_downcast<int32_t, int64_t>(grid_contiguous.stride(i));
+    params.grad_output_strides[i] = safe_downcast<int32_t, int64_t>(grad_output_contiguous.stride(i));
+    params.input_strides[i] = safe_downcast<int32_t, int64_t>(input_contiguous.stride(i));
+    params.grad_input_strides[i] = safe_downcast<int32_t, int64_t>(grad_input_buf.stride(i));
+    params.grad_grid_strides[i] = safe_downcast<int32_t, int64_t>(grad_grid_buf.stride(i));
+  }
+
+  MPSStream* mpsStream = getCurrentMPSStream();
+
   dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
     @autoreleasepool {
       id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
 
-      if (run_grad_input) {
-        auto gradInputPSO = lib.getPipelineStateForFunc(
-            fmt::format("grid_sampler_3d_backward_input_{}", scalarToMetalTypeString(input)));
+      auto pso =
+          lib.getPipelineStateForFunc(fmt::format("grid_sampler_3d_backward_{}", scalarToMetalTypeString(input)));
 
-        getMPSProfiler().beginProfileKernel(
-            gradInputPSO, "grid_sampler_3d_backward_input", {grad_output_contiguous, grid_contiguous, grad_input});
+      getMPSProfiler().beginProfileKernel(
+          pso,
+          "grid_sampler_3d_backward",
+          {grad_output_contiguous, input_contiguous, grid_contiguous, grad_input_buf, grad_grid_buf});
 
-        [computeEncoder setComputePipelineState:gradInputPSO];
+      [computeEncoder setComputePipelineState:pso];
 
-        std::array<uint64_t, 5> grad_input_strides = {static_cast<uint64_t>(grad_input.stride(0)),
-                                                      static_cast<uint64_t>(grad_input.stride(1)),
-                                                      static_cast<uint64_t>(grad_input.stride(2)),
-                                                      static_cast<uint64_t>(grad_input.stride(3)),
-                                                      static_cast<uint64_t>(grad_input.stride(4))};
+      mtl_setArgs(computeEncoder,
+                  grad_output_contiguous,
+                  input_contiguous,
+                  grid_contiguous,
+                  grad_input_buf,
+                  grad_grid_buf,
+                  params);
 
-        mtl_setArgs(computeEncoder,
-                    grad_output_contiguous,
-                    grid_contiguous,
-                    grad_input,
-                    interp_mode,
-                    pad_mode,
-                    align_corners,
-                    input_sizes,
-                    output_sizes,
-                    grad_input_strides,
-                    grid_strides,
-                    grad_output_strides);
+      MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
+      MTLSize threadsPerGrid = MTLSizeMake(out_W, out_H * out_D, N);
+      [computeEncoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
 
-        MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
-        MTLSize threadsPerGrid = MTLSizeMake(out_W, out_H * out_D, N);
-        [computeEncoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
-
-        getMPSProfiler().endProfileKernel(gradInputPSO);
-      }
-
-      if (run_grad_grid) {
-        auto gradGridPSO = lib.getPipelineStateForFunc(
-            fmt::format("grid_sampler_3d_backward_grid_{}", scalarToMetalTypeString(input)));
-
-        getMPSProfiler().beginProfileKernel(gradGridPSO,
-                                            "grid_sampler_3d_backward_grid",
-                                            {grad_output_contiguous, input_contiguous, grid_contiguous, grad_grid});
-
-        [computeEncoder setComputePipelineState:gradGridPSO];
-
-        mtl_setArgs(computeEncoder,
-                    grad_output_contiguous,
-                    input_contiguous,
-                    grid_contiguous,
-                    grad_grid,
-                    interp_mode,
-                    pad_mode,
-                    align_corners,
-                    input_sizes,
-                    output_sizes,
-                    input_strides,
-                    grad_grid.strides(),
-                    grid_strides,
-                    grad_output_strides);
-
-        MTLSize threadsPerThreadgroup = MTLSizeMake(16, 16, 1);
-        MTLSize threadsPerGrid = MTLSizeMake(out_W, out_H * out_D, N);
-        [computeEncoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
-
-        getMPSProfiler().endProfileKernel(gradGridPSO);
-      }
+      getMPSProfiler().endProfileKernel(pso);
     }
   });
 

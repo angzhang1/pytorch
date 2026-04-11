@@ -757,239 +757,149 @@ inline bool within_bounds_3d(
 }
 
 template <typename T>
-kernel void grid_sampler_3d_backward_input(
+kernel void grid_sampler_3d_backward(
     constant T* grad_output [[buffer(0)]],
-    constant T* grid [[buffer(1)]],
-    device atomic<float>* grad_input [[buffer(2)]],
-    constant int& interpolation_mode [[buffer(3)]],
-    constant int& padding_mode [[buffer(4)]],
-    constant bool& align_corners [[buffer(5)]],
-    constant ulong* input_sizes [[buffer(6)]],
-    constant ulong* output_sizes [[buffer(7)]],
-    constant ulong* grad_input_strides [[buffer(8)]],
-    constant ulong* grid_strides [[buffer(9)]],
-    constant ulong* grad_output_strides [[buffer(10)]],
+    constant T* input [[buffer(1)]],
+    constant T* grid [[buffer(2)]],
+    device atomic<float>* grad_input [[buffer(3)]],
+    device T* grad_grid [[buffer(4)]],
+    constant GridSampler3DBackwardParams& params [[buffer(5)]],
     uint3 thread_index [[thread_position_in_grid]]) {
   const auto out_w = thread_index.x;
   const auto out_d_h_combined = thread_index.y;
   const auto n = thread_index.z;
 
-  const auto out_d = out_d_h_combined / output_sizes[3];
-  const auto out_h = out_d_h_combined % output_sizes[3];
+  const auto out_d = out_d_h_combined / params.output_sizes[3];
+  const auto out_h = out_d_h_combined % params.output_sizes[3];
 
-  if (n >= input_sizes[0] || out_d >= output_sizes[2] ||
-      out_h >= output_sizes[3] || out_w >= output_sizes[4]) {
+  if (n >= params.input_sizes[0] || out_d >= params.output_sizes[2] ||
+      out_h >= params.output_sizes[3] || out_w >= params.output_sizes[4]) {
     return;
   }
 
-  const auto C = input_sizes[1];
-  const auto inp_D = input_sizes[2];
-  const auto inp_H = input_sizes[3];
-  const auto inp_W = input_sizes[4];
+  const auto C = params.input_sizes[1];
+  const auto inp_D = params.input_sizes[2];
+  const auto inp_H = params.input_sizes[3];
+  const auto inp_W = params.input_sizes[4];
 
-  const auto grid_offset = n * grid_strides[0] + out_d * grid_strides[1] +
-      out_h * grid_strides[2] + out_w * grid_strides[3];
+  const auto grid_offset = n * params.grid_strides[0] +
+      out_d * params.grid_strides[1] + out_h * params.grid_strides[2] +
+      out_w * params.grid_strides[3];
 
-  const float grid_x = grid[grid_offset];
-  const float grid_y = grid[grid_offset + grid_strides[4]];
-  const float grid_z = grid[grid_offset + 2 * grid_strides[4]];
+  const opmath_t<T> grid_x = grid[grid_offset];
+  const opmath_t<T> grid_y = grid[grid_offset + params.grid_strides[4]];
+  const opmath_t<T> grid_z = grid[grid_offset + 2 * params.grid_strides[4]];
 
-  float gix_mult, giy_mult, giz_mult;
-  float ix = grid_sampler_compute_source_index_set_grad(
+  opmath_t<T> gix_mult, giy_mult, giz_mult;
+  opmath_t<T> ix = grid_sampler_compute_source_index_set_grad(
       grid_x,
       static_cast<int32_t>(inp_W),
-      padding_mode,
-      align_corners,
+      params.padding_mode,
+      params.align_corners,
       &gix_mult);
-  float iy = grid_sampler_compute_source_index_set_grad(
+  opmath_t<T> iy = grid_sampler_compute_source_index_set_grad(
       grid_y,
       static_cast<int32_t>(inp_H),
-      padding_mode,
-      align_corners,
+      params.padding_mode,
+      params.align_corners,
       &giy_mult);
-  float iz = grid_sampler_compute_source_index_set_grad(
+  opmath_t<T> iz = grid_sampler_compute_source_index_set_grad(
       grid_z,
       static_cast<int32_t>(inp_D),
-      padding_mode,
-      align_corners,
+      params.padding_mode,
+      params.align_corners,
       &giz_mult);
 
-  if (interpolation_mode == 0) { // trilinear
-    const int ix_tnw = static_cast<int>(floor(ix));
-    const int iy_tnw = static_cast<int>(floor(iy));
-    const int iz_tnw = static_cast<int>(floor(iz));
+  if (params.interpolation_mode == 0) { // trilinear
+    const int ix_0 = static_cast<int>(floor(ix));
+    const int iy_0 = static_cast<int>(floor(iy));
+    const int iz_0 = static_cast<int>(floor(iz));
+    const opmath_t<T> dx = ix - ix_0;
+    const opmath_t<T> dy = iy - iy_0;
+    const opmath_t<T> dz = iz - iz_0;
+    const opmath_t<T> wx[2] = {1 - dx, dx};
+    const opmath_t<T> wy[2] = {1 - dy, dy};
+    const opmath_t<T> wz[2] = {1 - dz, dz};
 
-    const int ix_tne = ix_tnw + 1;
-    const int iy_tne = iy_tnw;
-    const int iz_tne = iz_tnw;
-    const int ix_tsw = ix_tnw;
-    const int iy_tsw = iy_tnw + 1;
-    const int iz_tsw = iz_tnw;
-    const int ix_tse = ix_tnw + 1;
-    const int iy_tse = iy_tnw + 1;
-    const int iz_tse = iz_tnw;
-    const int ix_bnw = ix_tnw;
-    const int iy_bnw = iy_tnw;
-    const int iz_bnw = iz_tnw + 1;
-    const int ix_bne = ix_tnw + 1;
-    const int iy_bne = iy_tnw;
-    const int iz_bne = iz_tnw + 1;
-    const int ix_bsw = ix_tnw;
-    const int iy_bsw = iy_tnw + 1;
-    const int iz_bsw = iz_tnw + 1;
-    const int ix_bse = ix_tnw + 1;
-    const int iy_bse = iy_tnw + 1;
-    const int iz_bse = iz_tnw + 1;
+    opmath_t<T> gix = 0, giy = 0, giz = 0;
 
-    const float tnw = (ix_bse - ix) * (iy_bse - iy) * (iz_bse - iz);
-    const float tne = (ix - ix_bsw) * (iy_bsw - iy) * (iz_bsw - iz);
-    const float tsw = (ix_bne - ix) * (iy - iy_bne) * (iz_bne - iz);
-    const float tse = (ix - ix_bnw) * (iy - iy_bnw) * (iz_bnw - iz);
-    const float bnw = (ix_tse - ix) * (iy_tse - iy) * (iz - iz_tse);
-    const float bne = (ix - ix_tsw) * (iy_tsw - iy) * (iz - iz_tsw);
-    const float bsw = (ix_tne - ix) * (iy - iy_tne) * (iz - iz_tne);
-    const float bse = (ix - ix_tnw) * (iy - iy_tnw) * (iz - iz_tnw);
-
-    for (ulong c = 0; c < C; c++) {
-      const auto grad_out_offset = n * grad_output_strides[0] +
-          c * grad_output_strides[1] + out_d * grad_output_strides[2] +
-          out_h * grad_output_strides[3] + out_w * grad_output_strides[4];
-      const float gOut = grad_output[grad_out_offset];
+    for (uint32_t c = 0; c < C; c++) {
+      const auto grad_out_offset = n * params.grad_output_strides[0] +
+          c * params.grad_output_strides[1] +
+          out_d * params.grad_output_strides[2] +
+          out_h * params.grad_output_strides[3] +
+          out_w * params.grad_output_strides[4];
+      const opmath_t<T> gOut = grad_output[grad_out_offset];
       const auto base_grad_input_offset =
-          n * grad_input_strides[0] + c * grad_input_strides[1];
+          n * params.grad_input_strides[0] + c * params.grad_input_strides[1];
+      const auto input_base_offset =
+          n * params.input_strides[0] + c * params.input_strides[1];
 
-      if (within_bounds_3d(
-              iz_tnw,
-              iy_tnw,
-              ix_tnw,
-              static_cast<int32_t>(inp_D),
-              static_cast<int32_t>(inp_H),
-              static_cast<int32_t>(inp_W))) {
-        atomic_fetch_add_explicit(
-            &grad_input
-                [base_grad_input_offset + iz_tnw * grad_input_strides[2] +
-                 iy_tnw * grad_input_strides[3] +
-                 ix_tnw * grad_input_strides[4]],
-            tnw * gOut,
-            memory_order_relaxed);
-      }
-      if (within_bounds_3d(
-              iz_tne,
-              iy_tne,
-              ix_tne,
-              static_cast<int32_t>(inp_D),
-              static_cast<int32_t>(inp_H),
-              static_cast<int32_t>(inp_W))) {
-        atomic_fetch_add_explicit(
-            &grad_input
-                [base_grad_input_offset + iz_tne * grad_input_strides[2] +
-                 iy_tne * grad_input_strides[3] +
-                 ix_tne * grad_input_strides[4]],
-            tne * gOut,
-            memory_order_relaxed);
-      }
-      if (within_bounds_3d(
-              iz_tsw,
-              iy_tsw,
-              ix_tsw,
-              static_cast<int32_t>(inp_D),
-              static_cast<int32_t>(inp_H),
-              static_cast<int32_t>(inp_W))) {
-        atomic_fetch_add_explicit(
-            &grad_input
-                [base_grad_input_offset + iz_tsw * grad_input_strides[2] +
-                 iy_tsw * grad_input_strides[3] +
-                 ix_tsw * grad_input_strides[4]],
-            tsw * gOut,
-            memory_order_relaxed);
-      }
-      if (within_bounds_3d(
-              iz_tse,
-              iy_tse,
-              ix_tse,
-              static_cast<int32_t>(inp_D),
-              static_cast<int32_t>(inp_H),
-              static_cast<int32_t>(inp_W))) {
-        atomic_fetch_add_explicit(
-            &grad_input
-                [base_grad_input_offset + iz_tse * grad_input_strides[2] +
-                 iy_tse * grad_input_strides[3] +
-                 ix_tse * grad_input_strides[4]],
-            tse * gOut,
-            memory_order_relaxed);
-      }
-      if (within_bounds_3d(
-              iz_bnw,
-              iy_bnw,
-              ix_bnw,
-              static_cast<int32_t>(inp_D),
-              static_cast<int32_t>(inp_H),
-              static_cast<int32_t>(inp_W))) {
-        atomic_fetch_add_explicit(
-            &grad_input
-                [base_grad_input_offset + iz_bnw * grad_input_strides[2] +
-                 iy_bnw * grad_input_strides[3] +
-                 ix_bnw * grad_input_strides[4]],
-            bnw * gOut,
-            memory_order_relaxed);
-      }
-      if (within_bounds_3d(
-              iz_bne,
-              iy_bne,
-              ix_bne,
-              static_cast<int32_t>(inp_D),
-              static_cast<int32_t>(inp_H),
-              static_cast<int32_t>(inp_W))) {
-        atomic_fetch_add_explicit(
-            &grad_input
-                [base_grad_input_offset + iz_bne * grad_input_strides[2] +
-                 iy_bne * grad_input_strides[3] +
-                 ix_bne * grad_input_strides[4]],
-            bne * gOut,
-            memory_order_relaxed);
-      }
-      if (within_bounds_3d(
-              iz_bsw,
-              iy_bsw,
-              ix_bsw,
-              static_cast<int32_t>(inp_D),
-              static_cast<int32_t>(inp_H),
-              static_cast<int32_t>(inp_W))) {
-        atomic_fetch_add_explicit(
-            &grad_input
-                [base_grad_input_offset + iz_bsw * grad_input_strides[2] +
-                 iy_bsw * grad_input_strides[3] +
-                 ix_bsw * grad_input_strides[4]],
-            bsw * gOut,
-            memory_order_relaxed);
-      }
-      if (within_bounds_3d(
-              iz_bse,
-              iy_bse,
-              ix_bse,
-              static_cast<int32_t>(inp_D),
-              static_cast<int32_t>(inp_H),
-              static_cast<int32_t>(inp_W))) {
-        atomic_fetch_add_explicit(
-            &grad_input
-                [base_grad_input_offset + iz_bse * grad_input_strides[2] +
-                 iy_bse * grad_input_strides[3] +
-                 ix_bse * grad_input_strides[4]],
-            bse * gOut,
-            memory_order_relaxed);
+      for (int i = 0; i < 8; i++) {
+        const int xi = i & 1;
+        const int yi = (i >> 1) & 1;
+        const int zi = (i >> 2) & 1;
+        const int cx = ix_0 + xi;
+        const int cy = iy_0 + yi;
+        const int cz = iz_0 + zi;
+
+        if (within_bounds_3d(
+                cz,
+                cy,
+                cx,
+                static_cast<int32_t>(inp_D),
+                static_cast<int32_t>(inp_H),
+                static_cast<int32_t>(inp_W))) {
+          const opmath_t<T> w = wx[xi] * wy[yi] * wz[zi];
+
+          if (params.compute_grad_input) {
+            atomic_fetch_add_explicit(
+                &grad_input
+                    [base_grad_input_offset +
+                     cz * params.grad_input_strides[2] +
+                     cy * params.grad_input_strides[3] +
+                     cx * params.grad_input_strides[4]],
+                static_cast<float>(w * gOut),
+                memory_order_relaxed);
+          }
+
+          if (params.compute_grad_grid) {
+            const opmath_t<T> val = input
+                [input_base_offset + cz * params.input_strides[2] +
+                 cy * params.input_strides[3] + cx * params.input_strides[4]];
+            const opmath_t<T> sign_x = xi ? 1 : -1;
+            const opmath_t<T> sign_y = yi ? 1 : -1;
+            const opmath_t<T> sign_z = zi ? 1 : -1;
+            gix += sign_x * val * wy[yi] * wz[zi] * gOut;
+            giy += sign_y * val * wx[xi] * wz[zi] * gOut;
+            giz += sign_z * val * wx[xi] * wy[yi] * gOut;
+          }
+        }
       }
     }
-  } else { // nearest
+
+    if (params.compute_grad_grid) {
+      const auto grad_grid_base_offset = n * params.grad_grid_strides[0] +
+          out_d * params.grad_grid_strides[1] +
+          out_h * params.grad_grid_strides[2] +
+          out_w * params.grad_grid_strides[3];
+      grad_grid[grad_grid_base_offset] = static_cast<T>(gix_mult * gix);
+      grad_grid[grad_grid_base_offset + params.grid_strides[4]] =
+          static_cast<T>(giy_mult * giy);
+      grad_grid[grad_grid_base_offset + 2 * params.grid_strides[4]] =
+          static_cast<T>(giz_mult * giz);
+    }
+  } else if (params.compute_grad_input) { // nearest
     int32_t ix_n = static_cast<int32_t>(rint(ix));
     int32_t iy_n = static_cast<int32_t>(rint(iy));
     int32_t iz_n = static_cast<int32_t>(rint(iz));
 
-    if (padding_mode == kPaddingBorder) {
+    if (params.padding_mode == kPaddingBorder) {
       ix_n = clamp(ix_n, 0, static_cast<int32_t>(inp_W - 1));
       iy_n = clamp(iy_n, 0, static_cast<int32_t>(inp_H - 1));
       iz_n = clamp(iz_n, 0, static_cast<int32_t>(inp_D - 1));
-    } else if (padding_mode == kPaddingReflection) {
-      if (align_corners) {
+    } else if (params.padding_mode == kPaddingReflection) {
+      if (params.align_corners) {
         ix_n = static_cast<int32_t>(rint(
             reflect_coordinates(static_cast<float>(ix_n), 0, 2 * (inp_W - 1))));
         iy_n = static_cast<int32_t>(rint(
@@ -1009,7 +919,7 @@ kernel void grid_sampler_3d_backward_input(
       iz_n = clamp(iz_n, 0, static_cast<int32_t>(inp_D - 1));
     }
 
-    bool in_bounds = padding_mode != kPaddingZeros ||
+    bool in_bounds = params.padding_mode != kPaddingZeros ||
         within_bounds_3d(iz_n,
                          iy_n,
                          ix_n,
@@ -1018,243 +928,25 @@ kernel void grid_sampler_3d_backward_input(
                          static_cast<int32_t>(inp_W));
 
     if (in_bounds) {
-      const auto base_offset = n * grad_input_strides[0] +
-          iz_n * grad_input_strides[2] + iy_n * grad_input_strides[3] +
-          ix_n * grad_input_strides[4];
+      const auto base_offset = n * params.grad_input_strides[0] +
+          iz_n * params.grad_input_strides[2] +
+          iy_n * params.grad_input_strides[3] +
+          ix_n * params.grad_input_strides[4];
 
-      for (ulong c = 0; c < C; c++) {
-        const auto grad_out_offset = n * grad_output_strides[0] +
-            c * grad_output_strides[1] + out_d * grad_output_strides[2] +
-            out_h * grad_output_strides[3] + out_w * grad_output_strides[4];
+      for (uint32_t c = 0; c < C; c++) {
+        const auto grad_out_offset = n * params.grad_output_strides[0] +
+            c * params.grad_output_strides[1] +
+            out_d * params.grad_output_strides[2] +
+            out_h * params.grad_output_strides[3] +
+            out_w * params.grad_output_strides[4];
         const float gOut = grad_output[grad_out_offset];
         atomic_fetch_add_explicit(
-            &grad_input[base_offset + c * grad_input_strides[1]],
+            &grad_input[base_offset + c * params.grad_input_strides[1]],
             gOut,
             memory_order_relaxed);
       }
     }
   }
-}
-
-template <typename T>
-kernel void grid_sampler_3d_backward_grid(
-    constant T* grad_output [[buffer(0)]],
-    constant T* input [[buffer(1)]],
-    constant T* grid [[buffer(2)]],
-    device T* grad_grid [[buffer(3)]],
-    constant int& interpolation_mode [[buffer(4)]],
-    constant int& padding_mode [[buffer(5)]],
-    constant bool& align_corners [[buffer(6)]],
-    constant ulong* input_sizes [[buffer(7)]],
-    constant ulong* output_sizes [[buffer(8)]],
-    constant ulong* input_strides [[buffer(9)]],
-    constant ulong* grad_grid_strides [[buffer(10)]],
-    constant ulong* grid_strides [[buffer(11)]],
-    constant ulong* grad_output_strides [[buffer(12)]],
-    uint3 thread_index [[thread_position_in_grid]]) {
-  const auto out_w = thread_index.x;
-  const auto out_d_h_combined = thread_index.y;
-  const auto n = thread_index.z;
-
-  const auto out_d = out_d_h_combined / output_sizes[3];
-  const auto out_h = out_d_h_combined % output_sizes[3];
-
-  if (n >= input_sizes[0] || out_d >= output_sizes[2] ||
-      out_h >= output_sizes[3] || out_w >= output_sizes[4]) {
-    return;
-  }
-
-  const auto C = input_sizes[1];
-  const auto inp_D = input_sizes[2];
-  const auto inp_H = input_sizes[3];
-  const auto inp_W = input_sizes[4];
-
-  const auto grid_offset = n * grid_strides[0] + out_d * grid_strides[1] +
-      out_h * grid_strides[2] + out_w * grid_strides[3];
-
-  const opmath_t<T> grid_x = grid[grid_offset];
-  const opmath_t<T> grid_y = grid[grid_offset + grid_strides[4]];
-  const opmath_t<T> grid_z = grid[grid_offset + 2 * grid_strides[4]];
-
-  opmath_t<T> gix_mult, giy_mult, giz_mult;
-  opmath_t<T> ix = grid_sampler_compute_source_index_set_grad(
-      grid_x,
-      static_cast<int32_t>(inp_W),
-      padding_mode,
-      align_corners,
-      &gix_mult);
-  opmath_t<T> iy = grid_sampler_compute_source_index_set_grad(
-      grid_y,
-      static_cast<int32_t>(inp_H),
-      padding_mode,
-      align_corners,
-      &giy_mult);
-  opmath_t<T> iz = grid_sampler_compute_source_index_set_grad(
-      grid_z,
-      static_cast<int32_t>(inp_D),
-      padding_mode,
-      align_corners,
-      &giz_mult);
-
-  const int32_t ix_tnw = static_cast<int32_t>(floor(ix));
-  const int32_t iy_tnw = static_cast<int32_t>(floor(iy));
-  const int32_t iz_tnw = static_cast<int32_t>(floor(iz));
-
-  const int32_t ix_tne = ix_tnw + 1;
-  const int32_t iy_tne = iy_tnw;
-  const int32_t iz_tne = iz_tnw;
-  const int32_t ix_tsw = ix_tnw;
-  const int32_t iy_tsw = iy_tnw + 1;
-  const int32_t iz_tsw = iz_tnw;
-  const int32_t ix_tse = ix_tnw + 1;
-  const int32_t iy_tse = iy_tnw + 1;
-  const int32_t iz_tse = iz_tnw;
-  const int32_t ix_bnw = ix_tnw;
-  const int32_t iy_bnw = iy_tnw;
-  const int32_t iz_bnw = iz_tnw + 1;
-  const int32_t ix_bne = ix_tnw + 1;
-  const int32_t iy_bne = iy_tnw;
-  const int32_t iz_bne = iz_tnw + 1;
-  const int32_t ix_bsw = ix_tnw;
-  const int32_t iy_bsw = iy_tnw + 1;
-  const int32_t iz_bsw = iz_tnw + 1;
-  const int32_t ix_bse = ix_tnw + 1;
-  const int32_t iy_bse = iy_tnw + 1;
-  const int32_t iz_bse = iz_tnw + 1;
-
-  const auto grad_grid_base_offset = n * grad_grid_strides[0] +
-      out_d * grad_grid_strides[1] + out_h * grad_grid_strides[2] +
-      out_w * grad_grid_strides[3];
-
-  opmath_t<T> gix = 0, giy = 0, giz = 0;
-
-  for (ulong c = 0; c < C; c++) {
-    const auto grad_out_offset = n * grad_output_strides[0] +
-        c * grad_output_strides[1] + out_d * grad_output_strides[2] +
-        out_h * grad_output_strides[3] + out_w * grad_output_strides[4];
-    const opmath_t<T> gOut = grad_output[grad_out_offset];
-
-    const auto input_base_offset = n * input_strides[0] + c * input_strides[1];
-
-    if (within_bounds_3d(
-            static_cast<int32_t>(iz_tnw),
-            static_cast<int32_t>(iy_tnw),
-            static_cast<int32_t>(ix_tnw),
-            static_cast<int32_t>(inp_D),
-            static_cast<int32_t>(inp_H),
-            static_cast<int32_t>(inp_W))) {
-      const opmath_t<T> tnw_val = input
-          [input_base_offset + iz_tnw * input_strides[2] +
-           iy_tnw * input_strides[3] + ix_tnw * input_strides[4]];
-      gix -= tnw_val * (iy_bse - iy) * (iz_bse - iz) * gOut;
-      giy -= tnw_val * (ix_bse - ix) * (iz_bse - iz) * gOut;
-      giz -= tnw_val * (ix_bse - ix) * (iy_bse - iy) * gOut;
-    }
-    if (within_bounds_3d(
-            static_cast<int32_t>(iz_tne),
-            static_cast<int32_t>(iy_tne),
-            static_cast<int32_t>(ix_tne),
-            static_cast<int32_t>(inp_D),
-            static_cast<int32_t>(inp_H),
-            static_cast<int32_t>(inp_W))) {
-      const opmath_t<T> tne_val = input
-          [input_base_offset + iz_tne * input_strides[2] +
-           iy_tne * input_strides[3] + ix_tne * input_strides[4]];
-      gix += tne_val * (iy_bsw - iy) * (iz_bsw - iz) * gOut;
-      giy -= tne_val * (ix - ix_bsw) * (iz_bsw - iz) * gOut;
-      giz -= tne_val * (ix - ix_bsw) * (iy_bsw - iy) * gOut;
-    }
-    if (within_bounds_3d(
-            static_cast<int32_t>(iz_tsw),
-            static_cast<int32_t>(iy_tsw),
-            static_cast<int32_t>(ix_tsw),
-            static_cast<int32_t>(inp_D),
-            static_cast<int32_t>(inp_H),
-            static_cast<int32_t>(inp_W))) {
-      const opmath_t<T> tsw_val = input
-          [input_base_offset + iz_tsw * input_strides[2] +
-           iy_tsw * input_strides[3] + ix_tsw * input_strides[4]];
-      gix -= tsw_val * (iy - iy_bne) * (iz_bne - iz) * gOut;
-      giy += tsw_val * (ix_bne - ix) * (iz_bne - iz) * gOut;
-      giz -= tsw_val * (ix_bne - ix) * (iy - iy_bne) * gOut;
-    }
-    if (within_bounds_3d(
-            static_cast<int32_t>(iz_tse),
-            static_cast<int32_t>(iy_tse),
-            static_cast<int32_t>(ix_tse),
-            static_cast<int32_t>(inp_D),
-            static_cast<int32_t>(inp_H),
-            static_cast<int32_t>(inp_W))) {
-      const opmath_t<T> tse_val = input
-          [input_base_offset + iz_tse * input_strides[2] +
-           iy_tse * input_strides[3] + ix_tse * input_strides[4]];
-      gix += tse_val * (iy - iy_bnw) * (iz_bnw - iz) * gOut;
-      giy += tse_val * (ix - ix_bnw) * (iz_bnw - iz) * gOut;
-      giz -= tse_val * (ix - ix_bnw) * (iy - iy_bnw) * gOut;
-    }
-    if (within_bounds_3d(
-            static_cast<int32_t>(iz_bnw),
-            static_cast<int32_t>(iy_bnw),
-            static_cast<int32_t>(ix_bnw),
-            static_cast<int32_t>(inp_D),
-            static_cast<int32_t>(inp_H),
-            static_cast<int32_t>(inp_W))) {
-      const opmath_t<T> bnw_val = input
-          [input_base_offset + iz_bnw * input_strides[2] +
-           iy_bnw * input_strides[3] + ix_bnw * input_strides[4]];
-      gix -= bnw_val * (iy_tse - iy) * (iz - iz_tse) * gOut;
-      giy -= bnw_val * (ix_tse - ix) * (iz - iz_tse) * gOut;
-      giz += bnw_val * (ix_tse - ix) * (iy_tse - iy) * gOut;
-    }
-    if (within_bounds_3d(
-            static_cast<int32_t>(iz_bne),
-            static_cast<int32_t>(iy_bne),
-            static_cast<int32_t>(ix_bne),
-            static_cast<int32_t>(inp_D),
-            static_cast<int32_t>(inp_H),
-            static_cast<int32_t>(inp_W))) {
-      const opmath_t<T> bne_val = input
-          [input_base_offset + iz_bne * input_strides[2] +
-           iy_bne * input_strides[3] + ix_bne * input_strides[4]];
-      gix += bne_val * (iy_tsw - iy) * (iz - iz_tsw) * gOut;
-      giy -= bne_val * (ix - ix_tsw) * (iz - iz_tsw) * gOut;
-      giz += bne_val * (ix - ix_tsw) * (iy_tsw - iy) * gOut;
-    }
-    if (within_bounds_3d(
-            static_cast<int32_t>(iz_bsw),
-            static_cast<int32_t>(iy_bsw),
-            static_cast<int32_t>(ix_bsw),
-            static_cast<int32_t>(inp_D),
-            static_cast<int32_t>(inp_H),
-            static_cast<int32_t>(inp_W))) {
-      const opmath_t<T> bsw_val = input
-          [input_base_offset + iz_bsw * input_strides[2] +
-           iy_bsw * input_strides[3] + ix_bsw * input_strides[4]];
-      gix -= bsw_val * (iy - iy_tne) * (iz - iz_tne) * gOut;
-      giy += bsw_val * (ix_tne - ix) * (iz - iz_tne) * gOut;
-      giz += bsw_val * (ix_tne - ix) * (iy - iy_tne) * gOut;
-    }
-    if (within_bounds_3d(
-            static_cast<int32_t>(iz_bse),
-            static_cast<int32_t>(iy_bse),
-            static_cast<int32_t>(ix_bse),
-            static_cast<int32_t>(inp_D),
-            static_cast<int32_t>(inp_H),
-            static_cast<int32_t>(inp_W))) {
-      const opmath_t<T> bse_val = input
-          [input_base_offset + iz_bse * input_strides[2] +
-           iy_bse * input_strides[3] + ix_bse * input_strides[4]];
-      gix += bse_val * (iy - iy_tnw) * (iz - iz_tnw) * gOut;
-      giy += bse_val * (ix - ix_tnw) * (iz - iz_tnw) * gOut;
-      giz += bse_val * (ix - ix_tnw) * (iy - iy_tnw) * gOut;
-    }
-  }
-
-  grad_grid[grad_grid_base_offset] = static_cast<T>(gix_mult * gix);
-  grad_grid[grad_grid_base_offset + grid_strides[4]] =
-      static_cast<T>(giy_mult * giy);
-  grad_grid[grad_grid_base_offset + 2 * grid_strides[4]] =
-      static_cast<T>(giz_mult * giz);
 }
 
 #define REGISTER_GRID_SAMPLER_2D(DTYPE, INTERP, INAME, PAD, PNAME)      \
@@ -1286,36 +978,14 @@ kernel void grid_sampler_3d_backward_grid(
   REGISTER_GRID_SAMPLER_3D(DTYPE, INTERP, INAME, PadReflection, "reflection")
 
 #define REGISTER_GRID_SAMPLER_BACKWARD(DTYPE)                      \
-  template [[host_name("grid_sampler_3d_backward_input_" #DTYPE)]] \
-  kernel void grid_sampler_3d_backward_input<DTYPE>(               \
-      constant DTYPE * grad_output [[buffer(0)]],                  \
-      constant DTYPE * grid [[buffer(1)]],                         \
-      device atomic<float> * grad_input [[buffer(2)]],             \
-      constant int& interpolation_mode [[buffer(3)]],              \
-      constant int& padding_mode [[buffer(4)]],                    \
-      constant bool& align_corners [[buffer(5)]],                  \
-      constant ulong* input_sizes [[buffer(6)]],                   \
-      constant ulong* output_sizes [[buffer(7)]],                  \
-      constant ulong* grad_input_strides [[buffer(8)]],            \
-      constant ulong* grid_strides [[buffer(9)]],                  \
-      constant ulong* grad_output_strides [[buffer(10)]],          \
-      uint3 thread_index [[thread_position_in_grid]]);             \
-                                                                   \
-  template [[host_name("grid_sampler_3d_backward_grid_" #DTYPE)]]  \
-  kernel void grid_sampler_3d_backward_grid<DTYPE>(                \
+  template [[host_name("grid_sampler_3d_backward_" #DTYPE)]]       \
+  kernel void grid_sampler_3d_backward<DTYPE>(                     \
       constant DTYPE * grad_output [[buffer(0)]],                  \
       constant DTYPE * input [[buffer(1)]],                        \
       constant DTYPE * grid [[buffer(2)]],                         \
-      device DTYPE * grad_grid [[buffer(3)]],                      \
-      constant int& interpolation_mode [[buffer(4)]],              \
-      constant int& padding_mode [[buffer(5)]],                    \
-      constant bool& align_corners [[buffer(6)]],                  \
-      constant ulong* input_sizes [[buffer(7)]],                   \
-      constant ulong* output_sizes [[buffer(8)]],                  \
-      constant ulong* input_strides [[buffer(9)]],                 \
-      constant ulong* grad_grid_strides [[buffer(10)]],            \
-      constant ulong* grid_strides [[buffer(11)]],                 \
-      constant ulong* grad_output_strides [[buffer(12)]],          \
+      device atomic<float> * grad_input [[buffer(3)]],             \
+      device DTYPE * grad_grid [[buffer(4)]],                      \
+      constant GridSampler3DBackwardParams & params [[buffer(5)]], \
       uint3 thread_index [[thread_position_in_grid]]);
 
 #define REGISTER_GRID_SAMPLER_OPS(DTYPE)                         \
