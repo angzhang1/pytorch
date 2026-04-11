@@ -1,64 +1,12 @@
 #include <ATen/native/mps/kernels/GridSampler.h>
 #include <ATen/native/mps/kernels/SamplingHelpers.h>
+#include <c10/metal/atomic.h>
 #include <c10/metal/utils.h>
 #include <metal_array>
 #include <metal_stdlib>
 
 using namespace metal;
 using namespace c10::metal;
-
-struct GridSamplerOffsets {
-  int32_t output;
-  int32_t input;
-  int32_t grid;
-
-  GridSamplerOffsets() : output(0), input(0), grid(0) {}
-};
-
-// Find offsets into the tensors that this thread will operate on,
-// based on the thread ID.
-static GridSamplerOffsets find_grid_sampler_offsets(
-    constant int32_t* output_sizes,
-    constant int32_t* output_strides,
-    constant int32_t* input_strides,
-    constant int32_t* grid_strides,
-    int32_t sampler_dims,
-    uint tid) {
-  auto dims = sampler_dims + 2;
-  auto output_idx = static_cast<int32_t>(tid);
-  GridSamplerOffsets offsets;
-
-  for (auto dim = dims - 1; dim >= 0; dim--) {
-    auto dim_idx = output_idx % output_sizes[dim];
-    output_idx = output_idx / output_sizes[dim];
-
-    // Select the output element that this thread will calculate.
-    // output shape:
-    //   2 sampler dims: (N, C, Hout, Wout)
-    //   3 sampler dims: (N, C, Dout, Hout, Wout)
-    offsets.output += output_strides[dim] * dim_idx;
-
-    // Select the batch and channel for the input.
-    // input shape:
-    //   2 sampler dims: (N, C, Hin, Win)
-    //   3 sampler dims: (N, C, Din, Hin, Win)
-    if (dim < 2) {
-      offsets.input += input_strides[dim] * dim_idx;
-    }
-
-    // Select the grid coordinates for the output element.
-    // grid shape:
-    //   2 sampler dims: (N, Hout, Wout, 2)
-    //   3 sampler dims: (N, Dout, Hout, Wout, 3)
-    if (dim == 0) {
-      offsets.grid += grid_strides[dim] * dim_idx;
-    } else if (dim >= 2) {
-      offsets.grid += grid_strides[dim - 1] * dim_idx;
-    }
-  }
-
-  return offsets;
-}
 
 // Mod function which gives positive output when `a` is negative
 static int32_t mod(int32_t a, int32_t b) {
@@ -761,7 +709,7 @@ kernel void grid_sampler_3d_backward(
     constant T* grad_output [[buffer(0)]],
     constant T* input [[buffer(1)]],
     constant T* grid [[buffer(2)]],
-    device atomic<float>* grad_input [[buffer(3)]],
+    device AtomicType_t<T>* grad_input [[buffer(3)]],
     device T* grad_grid [[buffer(4)]],
     constant GridSampler3DBackwardParams& params [[buffer(5)]],
     uint3 thread_index [[thread_position_in_grid]]) {
@@ -853,14 +801,12 @@ kernel void grid_sampler_3d_backward(
           const opmath_t<T> w = wx[xi] * wy[yi] * wz[zi];
 
           if (params.compute_grad_input) {
-            atomic_fetch_add_explicit(
-                &grad_input
-                    [base_grad_input_offset +
-                     cz * params.grad_input_strides[2] +
-                     cy * params.grad_input_strides[3] +
-                     cx * params.grad_input_strides[4]],
-                static_cast<float>(w * gOut),
-                memory_order_relaxed);
+            AtomicType<T>::atomic_add(
+                grad_input,
+                base_grad_input_offset + cz * params.grad_input_strides[2] +
+                    cy * params.grad_input_strides[3] +
+                    cx * params.grad_input_strides[4],
+                static_cast<T>(w * gOut));
           }
 
           if (params.compute_grad_grid) {
@@ -939,11 +885,11 @@ kernel void grid_sampler_3d_backward(
             out_d * params.grad_output_strides[2] +
             out_h * params.grad_output_strides[3] +
             out_w * params.grad_output_strides[4];
-        const float gOut = grad_output[grad_out_offset];
-        atomic_fetch_add_explicit(
-            &grad_input[base_offset + c * params.grad_input_strides[1]],
-            gOut,
-            memory_order_relaxed);
+        const opmath_t<T> gOut = grad_output[grad_out_offset];
+        AtomicType<T>::atomic_add(
+            grad_input,
+            base_offset + c * params.grad_input_strides[1],
+            static_cast<T>(gOut));
       }
     }
   }
@@ -983,7 +929,7 @@ kernel void grid_sampler_3d_backward(
       constant DTYPE * grad_output [[buffer(0)]],                  \
       constant DTYPE * input [[buffer(1)]],                        \
       constant DTYPE * grid [[buffer(2)]],                         \
-      device atomic<float> * grad_input [[buffer(3)]],             \
+      device AtomicType_t<DTYPE> * grad_input [[buffer(3)]],       \
       device DTYPE * grad_grid [[buffer(4)]],                      \
       constant GridSampler3DBackwardParams & params [[buffer(5)]], \
       uint3 thread_index [[thread_position_in_grid]]);

@@ -244,17 +244,14 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
               " and ",
               grid.scalar_type());
 
-  auto orig_dtype = input.scalar_type();
   auto input_requires_grad = output_mask[0];
   auto grid_requires_grad = output_mask[1];
   int32_t interp_mode = static_cast<int32_t>(interpolation_mode);
   int32_t pad_mode = static_cast<int32_t>(padding_mode);
 
-  // backward_input uses atomic<float> (Metal lacks atomic<half>/atomic<bfloat>),
-  // so grad_input is always float32 and converted back after the kernel.
   Tensor grad_input;
   if (input_requires_grad) {
-    grad_input = at::zeros(input.sizes(), input.options().dtype(at::kFloat));
+    grad_input = at::zeros_like(input);
   }
   auto grad_grid = grid_requires_grad ? at::empty_like(grid, MemoryFormat::Contiguous) : at::Tensor();
 
@@ -284,7 +281,7 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
 
   // The combined kernel needs valid buffer pointers for both outputs even when
   // only one gradient is requested, so allocate 1-element dummies as needed.
-  auto grad_input_buf = run_grad_input ? grad_input : at::zeros({1}, input.options().dtype(at::kFloat));
+  auto grad_input_buf = run_grad_input ? grad_input : at::zeros({1}, input.options());
   auto grad_grid_buf = run_grad_grid ? grad_grid : at::empty({1}, grid.options());
 
   GridSampler3DBackwardParams params;
@@ -342,10 +339,6 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
       getMPSProfiler().endProfileKernel(pso);
     }
   });
-
-  if (input_requires_grad && orig_dtype != ScalarType::Float) {
-    grad_input = grad_input.to(orig_dtype);
-  }
 
   return std::make_tuple(std::move(grad_input), std::move(grad_grid));
 }

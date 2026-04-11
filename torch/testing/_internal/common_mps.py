@@ -832,10 +832,8 @@ if torch.backends.mps.is_available():
             "nn.functional.conv3d": None,
             # MPS uses float32 intermediates (opmath_t) while CPU uses native
             # half/bfloat16 precision, causing unbounded divergence.
-            # Float32 forward is tested, and half precision is covered by
-            # test_grid_sampler_3d_half_precision (MPS half vs MPS float32).
+            # Half precision is covered by test_grid_sampler_3d_half_precision.
             "nn.functional.grid_sample": [torch.float16, torch.bfloat16],
-            "grid_sampler_3d": [torch.float16, torch.bfloat16],
         }
 
         def addDecorator(op: OpInfo, d: DecorateInfo) -> None:
@@ -995,6 +993,7 @@ if torch.backends.mps.is_available():
             "nn.functional.conv_transpose3d": [torch.float16],
             # MPS uses float32 intermediates via opmath_t, CPU accumulates
             # in native float16, causing large divergence over many channels.
+            # Half precision backward is covered by test_grid_sampler_3d_half_precision.
             "nn.functional.grid_sample": [torch.float16],
             "grid_sampler_3d": [torch.float16],
         }
