@@ -473,7 +473,7 @@ static PyObject* THPModule_addDocStr(PyObject* _unused, PyObject* args) {
           m->d_getset->name);
     }
     m->d_getset->doc = doc_str;
-  } else if (Py_TYPE(obj) == &PyType_Type) {
+  } else if (PyType_Check(obj)) {
     PyTypeObject* t = reinterpret_cast<PyTypeObject*>(obj);
     if (t->tp_doc) {
       return PyErr_Format(

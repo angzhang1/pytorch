@@ -3783,6 +3783,24 @@ class GraphModule(torch.nn.Module):
         self.assertEqual(result[0], x * 2)
         self.assertIs(result[1], m)
 
+    def test_generator_has_opaque_base_meta(self):
+        """torch.Generator uses OpaqueBaseMeta so isinstance() sees through
+        FakeScriptObject wrappers during tracing."""
+        from torch._opaque_base import OpaqueBaseMeta
+
+        self.assertIsInstance(torch.Generator, OpaqueBaseMeta)
+
+        from torch._library.fake_class_registry import (
+            FakeScriptObject,
+            maybe_to_fake_obj,
+        )
+        from torch._subclasses import FakeTensorMode
+
+        g = torch.Generator()
+        fso = maybe_to_fake_obj(FakeTensorMode(), g)
+        self.assertIsInstance(fso, FakeScriptObject)
+        self.assertIsInstance(fso, torch.Generator)
+
 
 instantiate_parametrized_tests(TestOpaqueObject)
 

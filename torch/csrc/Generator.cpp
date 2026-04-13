@@ -360,8 +360,38 @@ static PyTypeObject THPGeneratorType = {
 
 bool THPGenerator_init(PyObject* module) {
   THPGeneratorClass = reinterpret_cast<PyObject*>(&THPGeneratorType);
+
+  // Use OpaqueBaseMeta as the metaclass so that
+  // isinstance(fake_script_obj, torch.Generator) works during tracing,
+  // mirroring the pattern used for ProcessGroup in c10d/init.cpp.
+  PyObject* opaque_base_module = PyImport_ImportModule("torch._opaque_base");
+  if (!opaque_base_module)
+    return false;
+  PyObject* opaque_base_meta =
+      PyObject_GetAttrString(opaque_base_module, "OpaqueBaseMeta");
+  Py_DECREF(opaque_base_module);
+  if (!opaque_base_meta)
+    return false;
+  // Not DECREF'd: the static THPGeneratorType holds this as its metaclass
+  // for the entire process lifetime.
+  Py_SET_TYPE(&THPGeneratorType, (PyTypeObject*)opaque_base_meta);
+
   if (PyType_Ready(&THPGeneratorType) < 0)
     return false;
+
+  // PyType_Ready with OpaqueBaseMeta derives __module__ from the metaclass
+  // instead of tp_name, which breaks pickle. Override it so that pickle
+  // resolves Generator via torch.Generator.
+  PyObject* torch_str = PyUnicode_FromString("torch");
+  if (!torch_str)
+    return false;
+  if (PyDict_SetItemString(THPGeneratorType.tp_dict, "__module__", torch_str) <
+      0) {
+    Py_DECREF(torch_str);
+    return false;
+  }
+  Py_DECREF(torch_str);
+
   Py_INCREF(&THPGeneratorType);
   PyModule_AddObject(
       module, "Generator", reinterpret_cast<PyObject*>(&THPGeneratorType));
