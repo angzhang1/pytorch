@@ -3801,6 +3801,18 @@ class GraphModule(torch.nn.Module):
         self.assertIsInstance(fso, FakeScriptObject)
         self.assertIsInstance(fso, torch.Generator)
 
+    def test_generator_registered_as_opaque_reference(self):
+        """torch.Generator is registered as an opaque reference type so it
+        is hoisted as a graph input during dynamo tracing and handled by
+        the base Tracer.create_arg during make_fx tracing."""
+        from torch._library.opaque_object import (
+            is_opaque_reference_type,
+            is_opaque_type,
+        )
+
+        self.assertTrue(is_opaque_type(torch.Generator))
+        self.assertTrue(is_opaque_reference_type(torch.Generator))
+
 
 instantiate_parametrized_tests(TestOpaqueObject)
 

@@ -796,6 +796,111 @@ class inner_f(torch.nn.Module):
         compiled_fn(*dict(model.named_parameters()).values(), inputs).sum().backward()
         self.assertIsNotNone(model.linear.weight.grad)
 
+    @requires_cuda
+    def test_export_and_compile_with_selective_ac(self):
+        """
+        Test that torch.compile works on a pre-partitioned AOT autograd graph
+        containing graphsafe_run_with_rng_state (from selective activation
+        checkpointing). The Generator object used by graphsafe_run_with_rng_state
+        is registered as an opaque reference type and flows through the base
+        Tracer.create_arg in make_fx, then through Inductor's get_attr handler.
+        """
+        import functools
+        import itertools
+
+        from torch._subclasses import FakeTensorMode
+        from torch.utils.checkpoint import (
+            CheckpointPolicy,
+            create_selective_checkpoint_contexts,
+        )
+
+        def policy_fn(ctx, op, *args, **kwargs):
+            if op in (
+                torch.ops.aten._scaled_dot_product_flash_attention.default,
+                torch.ops.aten._scaled_dot_product_efficient_attention.default,
+                torch.ops.aten._scaled_dot_product_cudnn_attention.default,
+            ):
+                return CheckpointPolicy.MUST_RECOMPUTE
+            return CheckpointPolicy.MUST_SAVE
+
+        class AttentionBlock(nn.Module):
+            def __init__(self, nheads, dim):
+                super().__init__()
+                self.nheads = nheads
+                self.wq = nn.Linear(dim, dim, bias=False)
+                self.wk = nn.Linear(dim, dim, bias=False)
+                self.wv = nn.Linear(dim, dim, bias=False)
+                self.wo = nn.Linear(dim, dim, bias=False)
+
+            def _compute_attention(self, x):
+                q = self.wq(x)
+                k = self.wk(x)
+                v = self.wv(x)
+                q = q.unflatten(-1, (self.nheads, -1)).permute(0, 2, 1, 3)
+                k = k.unflatten(-1, (self.nheads, -1)).permute(0, 2, 1, 3)
+                v = v.unflatten(-1, (self.nheads, -1)).permute(0, 2, 1, 3)
+                o = nn.functional.scaled_dot_product_attention(q, k, v)
+                o = o.permute(0, 2, 1, 3).flatten(-2)
+                o = self.wo(o)
+                return o
+
+            def forward(self, x, context_fn=None):
+                return (
+                    torch.utils.checkpoint.checkpoint(
+                        self._compute_attention,
+                        x,
+                        use_reentrant=False,
+                        context_fn=context_fn,
+                    )
+                    + x
+                )
+
+        class AttentionWithPolicy(nn.Module):
+            def __init__(self, nheads, dim):
+                super().__init__()
+                self.block = AttentionBlock(nheads, dim)
+                self.context_fn = functools.partial(
+                    create_selective_checkpoint_contexts, policy_fn
+                )
+
+            def forward(self, x):
+                return self.block(x, context_fn=self.context_fn)
+
+        nheads, dim, bs, seq_len = 8, 128, 2, 16
+        model = AttentionWithPolicy(nheads, dim).cuda()
+
+        fake_mode = FakeTensorMode()
+        with fake_mode:
+            inputs = (torch.rand(bs, seq_len, dim, device="cuda"),)
+
+        gm = dynamo_graph_capture_for_export(model)(*inputs)
+
+        with ExitStack() as stack:
+            joint_with_descriptors = aot_export_joint_with_descriptors(
+                stack,
+                gm,
+                inputs,
+            )
+            parallel_model_fn = aot_compile_joint_with_descriptors(
+                joint_with_descriptors,
+            )
+
+        class WrapperModule(torch.nn.Module):
+            def forward(self, *args):
+                params = [
+                    v
+                    for k, v in itertools.chain(
+                        dict(model.named_parameters(remove_duplicate=False)).items(),
+                        dict(model.named_buffers(remove_duplicate=False)).items(),
+                    )
+                ]
+                return parallel_model_fn([*params, *args])
+
+        real_inputs = (torch.rand(bs, seq_len, dim, device="cuda"),)
+        compiled = torch.compile(WrapperModule(), fullgraph=True)
+        out = compiled(*real_inputs)
+        out.sum().backward()
+
     def test_preserve_annotate_simple(self):
         """Test basic linear module with aot_export_joint_with_descriptors"""
 

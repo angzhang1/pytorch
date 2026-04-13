@@ -3048,5 +3048,10 @@ def _as_tensor_fullprec(t):
 if _is_device_backend_autoload_enabled():
     _import_device_backends()
 
+from torch._library.opaque_object import register_opaque_type
+
+
+register_opaque_type(torch.Generator, typ="reference")
+
 # Register all registered custom / override ops in torch/_native
 import torch._native

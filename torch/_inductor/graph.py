@@ -1231,6 +1231,14 @@ class GraphLowering(torch.fx.Interpreter):
             self.graph_input_names.append(target)
             return expr
         elif isinstance(example, FakeScriptObject):
+            # Generators wrapped in FakeScriptObject (from dynamo opaque
+            # reference tracing) need GeneratorState for proper device
+            # tracking in downstream codegen.
+            if isinstance(example.real_obj, torch.Generator):
+                gen = ir.GeneratorState(name=target, device=example.real_obj.device)
+                self.graph_inputs[target] = gen  # type: ignore[assignment]
+                self.graph_input_names.append(target)
+                return gen
             obj = TorchBindObject(name=target, value=example)
             self.graph_inputs[target] = obj
             self.graph_input_names.append(target)
@@ -1488,7 +1496,14 @@ class GraphLowering(torch.fx.Interpreter):
         target: str,  # type: ignore[override]
         args: tuple[()],  # type: ignore[override]
         kwargs: dict[str, object],
-    ) -> Constant | TensorBox | ShapeAsConstantBuffer | ir.Subgraph | TorchBindObject:
+    ) -> (
+        Constant
+        | TensorBox
+        | ShapeAsConstantBuffer
+        | ir.Subgraph
+        | TorchBindObject
+        | ir.GeneratorState
+    ):
         # this is a constant
         value = getattr_recursive(self.module, target)  # type: ignore[arg-type]
 
@@ -1509,11 +1524,14 @@ class GraphLowering(torch.fx.Interpreter):
             self.torchbind_constants[target] = value
             self.constant_reprs[target] = ""
             return TorchBindObject(name=target, value=value)
+        elif isinstance(value, torch.Generator):
+            self.torchbind_constants[target] = value  # type: ignore[arg-type]
+            self.constant_reprs[target] = ""
+            return ir.GeneratorState(name=target, device=value.device)
         elif is_opaque_type(type(value)):
             self.torchbind_constants[target] = value  # type: ignore[arg-type]
             self.constant_reprs[target] = ""
             return TorchBindObject(name=target, value=value)  # type: ignore[arg-type]
-
         assert isinstance(value, torch.Tensor)
         if (
             config.aot_inductor.use_runtime_constant_folding

@@ -1717,8 +1717,10 @@ class CommonTemplate:
 
         self.common(fn, (torch.linspace(-10, 10, 41), None), assert_equal=False)
 
-        # generator not yet supported in dynamo
-        with self.assertRaisesRegex(torch._dynamo.exc.Unsupported, "Generator"):
+        # Generator is now an opaque reference type, so dynamo traces through
+        # it but hits a runtime error when the op tries to use it with fake
+        # tensors.
+        with self.assertRaises(torch._dynamo.exc.TorchRuntimeError):
             self.common(fn, (torch.linspace(-10, 10, 41), torch.Generator(self.device)))
 
     def test_sgn_extremal(self):
