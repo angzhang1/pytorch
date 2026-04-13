@@ -27,11 +27,15 @@ PyObject* THPGenerator_initDefaultGenerator(const at::Generator& cdata) {
     throw python_error();
   auto self_ = reinterpret_cast<THPGenerator*>(self.get());
   self_->cdata = cdata;
+  self_->weakreflist = nullptr;
   return self.release();
 }
 
 static void THPGenerator_dealloc(PyObject* _self) {
   auto self = reinterpret_cast<THPGenerator*>(_self);
+  if (self->weakreflist) {
+    PyObject_ClearWeakRefs(_self);
+  }
   if (self->cdata.defined()) {
     self->cdata.set_pyobj(nullptr);
     self->cdata.~Generator();
@@ -51,6 +55,7 @@ static PyObject* THPGenerator_pynew(
 
   THPGeneratorPtr self(
       reinterpret_cast<THPGenerator*>(type->tp_alloc(type, 0)));
+  self->weakreflist = nullptr;
 
   c10::DeviceType device_type = device.type();
   if (device_type == at::kCPU) {
@@ -337,7 +342,7 @@ static PyTypeObject THPGeneratorType = {
     nullptr, /* tp_traverse */
     nullptr, /* tp_clear */
     nullptr, /* tp_richcompare */
-    0, /* tp_weaklistoffset */
+    offsetof(THPGenerator, weakreflist), /* tp_weaklistoffset */
     nullptr, /* tp_iter */
     nullptr, /* tp_iternext */
     THPGenerator_methods, /* tp_methods */
@@ -404,6 +409,7 @@ PyObject* THPGenerator_NewWithVar(PyTypeObject* type, Generator gen) {
   if (obj) {
     auto g = reinterpret_cast<THPGenerator*>(obj);
     new (&g->cdata) Generator(std::move(gen));
+    g->weakreflist = nullptr;
     set_pyobj(g->cdata, obj);
   }
   return obj;
