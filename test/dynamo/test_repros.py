@@ -80,13 +80,13 @@ from torch.testing._internal.common_utils import (
     skipIfHpu,
     skipIfWindows,
     TEST_WITH_ROCM,
-    xfailIfS390X,
     TEST_XPU,
+    xfailIfS390X,
 )
+from torch.testing._internal.inductor_utils import HAS_GPU
 from torch.testing._internal.logging_utils import LoggingTestCase, make_logging_test
 from torch.testing._internal.two_tensor import TwoTensor
 from torch.utils._python_dispatch import TorchDispatchMode
-from torch.testing._internal.inductor_utils import HAS_GPU
 
 
 _orig_module_call = torch.nn.Module.__call__
@@ -8427,12 +8427,20 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
                 super().__init__()
                 self.a = torch.nn.Parameter(
                     torch.randn(
-                        64, 64, dtype=torch.bfloat16, device=device_type, requires_grad=True
+                        64,
+                        64,
+                        dtype=torch.bfloat16,
+                        device=device_type,
+                        requires_grad=True
                     )
                 )
                 self.b = torch.nn.Parameter(
                     torch.randn(
-                        64, 64, dtype=torch.bfloat16, device=device_type, requires_grad=True
+                        64,
+                        64,
+                        dtype=torch.bfloat16,
+                        device=device_type,
+                        requires_grad=True
                     )
                 )
                 self.bias = torch.nn.Parameter(
@@ -8465,7 +8473,9 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
                 self.ops_counter[func] += 1
                 return rs
 
-        a = torch.randn(64, 64, dtype=torch.bfloat16, device=device_type, requires_grad=True)
+        a = torch.randn(
+            64, 64, dtype=torch.bfloat16, device=device_type, requires_grad=True
+        )
         out = m(a)
         with TrackingMode() as mode:
             out.sum().backward()
