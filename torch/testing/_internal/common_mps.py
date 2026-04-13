@@ -991,11 +991,6 @@ if torch.backends.mps.is_available():
             "nn.functional.conv_transpose1d": [torch.float16],
             "nn.functional.conv_transpose2d": [torch.float16],
             "nn.functional.conv_transpose3d": [torch.float16],
-            # MPS uses float32 intermediates via opmath_t, CPU accumulates
-            # in native float16, causing large divergence over many channels.
-            # Half precision backward is covered by test_grid_sampler_3d_half_precision.
-            "nn.functional.grid_sample": [torch.float16],
-            "grid_sampler_3d": [torch.float16],
         }
 
         ON_MPS_XFAILLIST = {

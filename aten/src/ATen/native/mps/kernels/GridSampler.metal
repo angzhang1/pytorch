@@ -634,11 +634,13 @@ T grid_sampler_compute_source_index_set_grad(
   }
 
   if (padding_mode == kPaddingBorder) {
+    // Borders are considered out of bounds for gradient calculation
+    // (matching CUDA clip_coordinates_set_grad behavior).
     U grad_clip = U(1.0);
-    if (u_coord < U(0.0)) {
+    if (u_coord <= U(0.0)) {
       u_coord = U(0.0);
       grad_clip = U(0.0);
-    } else if (u_coord > u_size - U(1.0)) {
+    } else if (u_coord >= u_size - U(1.0)) {
       u_coord = u_size - U(1.0);
       grad_clip = U(0.0);
     }
@@ -677,12 +679,12 @@ T grid_sampler_compute_source_index_set_grad(
       u_coord = U(0.0);
     }
 
-    // Clip after reflection
+    // Clip after reflection (borders out of bounds for gradient)
     U grad_clip = U(1.0);
-    if (u_coord < U(0.0)) {
+    if (u_coord <= U(0.0)) {
       u_coord = U(0.0);
       grad_clip = U(0.0);
-    } else if (u_coord > u_size - U(1.0)) {
+    } else if (u_coord >= u_size - U(1.0)) {
       u_coord = u_size - U(1.0);
       grad_clip = U(0.0);
     }
