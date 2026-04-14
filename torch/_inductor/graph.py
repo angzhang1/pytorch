@@ -396,6 +396,7 @@ class GraphLowering(torch.fx.Interpreter):
         self.const_module = const_module
         self.inputs_to_check = inputs_to_check
         self._defers_input_alignment = False
+        self._fusion_region_of: dict[Node, OrderedSet[Node]] | None = None
 
         self.extra_traceback = False  # we do our own error wrapping
         if shape_env is None:
@@ -569,6 +570,36 @@ class GraphLowering(torch.fx.Interpreter):
 
         # Cache for dep size hints to avoid expensive recomputation
         self.dep_size_hint_cache: dict[tuple[Dep, bool], int] = {}
+
+    def _get_fusion_region_of(self) -> dict[Node, OrderedSet[Node]]:
+        if self._fusion_region_of is None:
+            from torch._inductor.fx_passes.fusion_regions import build_fusion_regions
+
+            self._fusion_region_of = build_fusion_regions(self.orig_gm)
+        return self._fusion_region_of
+
+    def _count_effective_users(self, n: Node) -> int:
+        if len(n.users) <= 1:
+            return len(n.users)
+
+        region_of = self._get_fusion_region_of()
+        counted_regions: OrderedSet[int] = OrderedSet()
+        effective_users = 0
+
+        for user in n.users:
+            user_region = region_of.get(user)
+            if user_region is None:
+                effective_users += 1
+                continue
+
+            region_id = id(user_region)
+            if region_id in counted_regions:
+                continue
+
+            counted_regions.add(region_id)
+            effective_users += 1
+
+        return effective_users
 
     def freeze_runtime_asserts(self) -> None:
         self._shape_env.freeze_runtime_asserts()
@@ -2075,12 +2106,12 @@ class GraphLowering(torch.fx.Interpreter):
                     _data = _data.data
 
                 if isinstance(_data, StorageBox) and _data.should_realize_on_reuse(
-                    len(n.users)
+                    self._count_effective_users(n)
                 ):
                     result = maybe_apply_channels_last_stride_order(result, n)
 
                 # TODO(jansel): introduce a store vs inline choice
-                result.mark_reuse(len(n.users))
+                result.mark_reuse(self._count_effective_users(n))
 
             # Realize if the IRNode already has accumulated lots of reads
             if isinstance(result, TensorBox) and result.has_exceeded_max_reads():
