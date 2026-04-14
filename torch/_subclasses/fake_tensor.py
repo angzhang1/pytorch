@@ -456,6 +456,14 @@ class FakeTensorConverter:
         if out is NotImplemented:
             raise UnsupportedFakeTensorException("meta converter nyi")
 
+        # Propagate grad_dtype here rather than in meta_converter because
+        # meta tensors don't carry autograd metadata (grad_dtype is stripped
+        # during meta conversion).
+        if t.requires_grad and t.is_leaf:
+            src_grad_dtype = t.grad_dtype
+            if src_grad_dtype != t.dtype:
+                out.grad_dtype = src_grad_dtype
+
         from torch._dynamo.source import RandomValueSource
 
         value = None
