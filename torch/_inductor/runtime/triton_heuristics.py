@@ -434,6 +434,10 @@ class CachingAutotuner(KernelInterface):
 
         self.triton_interpret = os.environ.get("TRITON_INTERPRET", "0") == "1"
 
+        # Cached launcher for fast path — bypasses all preamble after first
+        # successful steady-state launch.  Set to None until populated.
+        self._fast_launcher: LauncherType | None = None
+
         # Compile-time info included in runtime logginging
         self.compile_id: CompileId | None = None
         self.is_backward = False
@@ -1654,6 +1658,16 @@ class CachingAutotuner(KernelInterface):
         **kwargs,
     ):  # type:ignore[override]
         """Launch triton kernel call and return result."""
+        # --- FAST PATH ---
+        # After the first successful launch in steady state (single launcher,
+        # no debug/profiler/interpret), cache the launcher and skip all preamble
+        # on subsequent calls.  This saves ~2µs per kernel launch by avoiding
+        # get_active_debug_mode(), set_allocator(), TritonBundler.put_winner(),
+        # combo/coordesc checks, tuple(args) copy, and dump_launch checks.
+        fast = self._fast_launcher
+        if fast is not None and not benchmark_run and not kwargs:
+            return fast(*args, stream=stream)
+
         debug_mode = get_active_debug_mode()
         debug_call = None
         if debug_mode:
@@ -1764,6 +1778,22 @@ class CachingAutotuner(KernelInterface):
 
         if debug_call:
             debug_call.finalize(self.get_device_interface())
+
+        # Populate fast path: cache the launcher for future calls when all
+        # conditions are met (single launcher, no debug, no profiler, no
+        # interpret, no dump, no combo/coordesc pending).
+        if (
+            self._fast_launcher is None
+            and not benchmark_run
+            and not debug_mode
+            and not self.triton_interpret
+            and not self.dump_launch_params
+            and not self.dump_launch_tensors
+            and not autograd_profiler._is_profiler_enabled
+            and len(self.launchers) == 1
+        ):
+            self._fast_launcher = launcher
+
         return result
 
     def _interpret_args_grid(
