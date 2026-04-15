@@ -388,6 +388,23 @@ class RecompileLimitKwargTests(torch._dynamo.test_case.TestCase):
         with self.assertRaises(FailOnRecompileLimitHit):
             opt_f(torch.randn(3, dtype=torch.float64))
 
+    def test_recompile_limit_stricter_than_global(self):
+        """recompile_limit kwarg can be stricter than the global config."""
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        def f(x):
+            return x.sin()
+
+        # Global default is 8, but this region only allows 1
+        opt_f = torch.compile(f, backend=cnt, recompile_limit=1)
+
+        opt_f(torch.randn(3))
+        self.assertEqual(cnt.frame_count, 1)
+
+        # Should stop — recompile_limit=1 reached
+        opt_f(torch.randn(3, dtype=torch.float64))
+        self.assertEqual(cnt.frame_count, 1)
+
     @torch._dynamo.config.patch(automatic_dynamic_shapes=True)
     def test_recompile_limit_resume_function_auto_dynamic(self):
         """With automatic dynamic shapes and recompile_limit=2, the resume
