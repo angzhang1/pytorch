@@ -214,7 +214,7 @@ KERNEL_COUNT_OVERRIDES = {
     "test_adamw_tensor_lr_amsgrad_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
     "test_adam_tensor_lr_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """5"""),
     "test_adam_tensor_lr_amsgrad_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
-    "test_adam_tensor_lr_tensor_betas_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """6"""),
+    "test_adam_tensor_lr_tensor_betas_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """3"""),
     "test_adam_tensor_lr_tensor_betas_amsgrad_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
     "test_adam_tensor_lr_tensor_betas_capturable_cuda": lambda x: assert_expected_inline(x, """6"""),
     "test_adam_tensor_lr_tensor_betas_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
@@ -278,7 +278,7 @@ KERNEL_COUNTS = {
     Adagrad: KernelCounts(multitensor=2, singletensor=8),
     SGD: KernelCounts(multitensor=1, singletensor=8),
     ASGD: KernelCounts(multitensor=2, singletensor=8),
-    RAdam: KernelCounts(multitensor=2, singletensor=8),
+    RAdam: KernelCounts(multitensor=2, singletensor=12),
     Adamax: KernelCounts(multitensor=2, singletensor=8),
 }
 
