@@ -117,13 +117,20 @@ class HashableTracker:
         """
         Computes the hash value for the wrapped VariableTracker.
 
-        For unrealized LazyVariableTrackers, uses the hash of the original value
+        For LazyConstantVariable, uses get_python_hash() which computes hash
+        without full realization (only installs TYPE_MATCH guard).
+        For other unrealized LazyVariableTrackers, uses the hash of the original value
         to avoid realizing the tracker and inserting unnecessary guards.
         For all other cases, delegates to the VariableTracker's get_python_hash method.
 
         Returns:
             The hash value of the underlying variable tracker
         """
+        from .lazy import LazyConstantVariable
+
+        # LazyConstantVariable has get_python_hash() that installs TYPE_MATCH guard
+        if isinstance(self.vt, LazyConstantVariable) and not self.vt.is_realized():
+            return self.vt.get_python_hash()
         if (
             isinstance(self.vt, variables.LazyVariableTracker)
             and not self.vt.is_realized()
