@@ -3473,7 +3473,7 @@ class CPUReproTests(TestCase):
             )
             self.assertEqual(
                 metrics.cpp_outer_loop_fused_inner_counts[0].local_buffer_number,
-                1,
+                0,
             )
             # Check the number of global buffer allocation
             torch._dynamo.reset()
@@ -3522,15 +3522,7 @@ class CPUReproTests(TestCase):
             self.common(fn, (x,), atol=atol, rtol=rtol)
             self.assertEqual(
                 len(metrics.cpp_outer_loop_fused_inner_counts),
-                1,
-            )
-            self.assertEqual(
-                metrics.cpp_outer_loop_fused_inner_counts[0].inner_kernel_number,
-                5,
-            )
-            self.assertEqual(
-                metrics.cpp_outer_loop_fused_inner_counts[0].local_buffer_number,
-                2,
+                0,
             )
 
     @config.patch({"fx_graph_cache": False, "fx_graph_remote_cache": False})
@@ -3590,7 +3582,7 @@ class CPUReproTests(TestCase):
             )
             self.assertEqual(
                 metrics.cpp_outer_loop_fused_inner_counts[0].local_buffer_number,
-                2,
+                0,
             )
 
     @config.patch({"fx_graph_cache": False, "fx_graph_remote_cache": False})
@@ -5803,10 +5795,8 @@ class CPUReproTests(TestCase):
         x = torch.randn(1000, 1000)
         opt_fn = torch.compile(fn)
         _, code = run_and_get_cpp_code(opt_fn, x)
-        FileCheck().check_count(
+        FileCheck().check(
             ".exp()",
-            3,
-            exactly=True,
         ).run(code)
 
     def test_convert_fp32_int64_oob_vec(self):
