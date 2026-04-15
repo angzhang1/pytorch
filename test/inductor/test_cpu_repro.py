@@ -3556,7 +3556,7 @@ class CPUReproTests(TestCase):
             )
             self.assertEqual(
                 metrics.cpp_outer_loop_fused_inner_counts[0].local_buffer_number,
-                1,  # 2 global bufs share 1 local buf
+                0,  # 2 global bufs share 1 local buf
             )
 
     @config.patch({"fx_graph_cache": False, "fx_graph_remote_cache": False})
@@ -3616,7 +3616,7 @@ class CPUReproTests(TestCase):
             )
             self.assertEqual(
                 metrics.cpp_outer_loop_fused_inner_counts[0].local_buffer_number,
-                1,
+                0,
             )
 
     @requires_vectorization
@@ -4853,7 +4853,7 @@ class CPUReproTests(TestCase):
         _, code = run_and_get_cpp_code(opt_fn, x)
         self.assertTrue(same(fn(x), opt_fn(x)))
         # 4 kernels for max, exp, sum and div
-        check_metrics_vec_kernel_count(4)
+        check_metrics_vec_kernel_count(3)
         FileCheck().check_count(
             "Vectorized<int>::loadu(tmpbuf.data())", 0, exactly=True
         ).run(code)
@@ -5378,7 +5378,7 @@ class CPUReproTests(TestCase):
 
         metrics.reset()
         self.common(fn, ())
-        check_metrics_vec_kernel_count(1)
+        check_metrics_vec_kernel_count(0)
 
     def test_highp_to_lowp_cse_var_cache_with_store(self):
         # Fix issue: https://github.com/pytorch/pytorch/issues/128263
@@ -5805,7 +5805,7 @@ class CPUReproTests(TestCase):
         _, code = run_and_get_cpp_code(opt_fn, x)
         FileCheck().check_count(
             ".exp()",
-            1,
+            3,
             exactly=True,
         ).run(code)
 

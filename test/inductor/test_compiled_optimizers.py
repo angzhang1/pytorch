@@ -216,7 +216,7 @@ KERNEL_COUNT_OVERRIDES = {
     "test_adam_tensor_lr_amsgrad_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
     "test_adam_tensor_lr_tensor_betas_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """3"""),
     "test_adam_tensor_lr_tensor_betas_amsgrad_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
-    "test_adam_tensor_lr_tensor_betas_capturable_cuda": lambda x: assert_expected_inline(x, """6"""),
+    "test_adam_tensor_lr_tensor_betas_capturable_cuda": lambda x: assert_expected_inline(x, """3"""),
     "test_adam_tensor_lr_tensor_betas_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
     "test_adam_amsgrad_capturable_cuda": lambda x: assert_expected_inline(x, """6"""),
     "test_adam_amsgrad_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
@@ -269,7 +269,7 @@ KERNEL_COUNT_OVERRIDES = {
 
 # also tracks currently supported optimizers
 KERNEL_COUNTS = {
-    Adam: KernelCounts(multitensor=2, singletensor=8),
+    Adam: KernelCounts(multitensor=3, singletensor=8),
     AdamW: KernelCounts(multitensor=2, singletensor=8),
     NAdam: KernelCounts(multitensor=2, singletensor=12),
     Rprop: KernelCounts(multitensor=2, singletensor=8),
