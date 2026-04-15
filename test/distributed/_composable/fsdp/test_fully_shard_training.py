@@ -832,6 +832,164 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                 )
 
     @skip_if_lt_x_gpu(2, allow_cpu=True)
+    def test_partial_group_forward_then_standalone(self):
+        """
+        Tests the chunked-loss pattern with grouped FSDP modules: model forward
+        skips one module in the group, then that module is called standalone in a
+        chunk loop with per-chunk backward. This exercises the case where
+        ``modules_to_run`` in ``_register_group_forward_hooks`` has stale entries
+        from a previous incomplete group forward.
+
+        Uses separate ``fully_shard()`` calls as reference to verify gradient
+        correctness end-to-end.
+        """
+        self.run_subtests(
+            {
+                "reshard_after_forward": [True, False],
+                "weight_tying": [False, True],
+            },
+            self._test_partial_group_forward_then_standalone,
+        )
+
+    def _test_partial_group_forward_then_standalone(
+        self,
+        reshard_after_forward: bool | int,
+        weight_tying: bool,
+    ):
+        class ChunkedHeadModel(nn.Module):
+            def __init__(self, dim: int, vocab_size: int, tie: bool) -> None:
+                super().__init__()
+                self.embed = nn.Embedding(vocab_size, dim)
+                self.body = nn.Linear(dim, dim, bias=False)
+                self.norm = nn.RMSNorm(dim)
+                self.head = nn.Linear(dim, vocab_size, bias=False)
+                if tie:
+                    self.head.weight = self.embed.weight
+
+            def forward(
+                self, tokens: torch.Tensor, *, skip_head: bool = False
+            ) -> torch.Tensor:
+                h = self.embed(tokens)
+                h = self.body(h)
+                h = self.norm(h)
+                if skip_head:
+                    return h
+                return self.head(h)
+
+        dim, vocab_size, n_chunks = 32, 128, 4
+        fsdp_kwargs: dict = {"reshard_after_forward": reshard_after_forward}
+
+        def _run_chunked(model: nn.Module):
+            """Run the chunked-loss pattern. Returns (total_loss, grads)."""
+            h = model(tokens, skip_head=True)
+            h_detached = h.detach().requires_grad_(True)
+            chunks = torch.chunk(h_detached, n_chunks, dim=1)
+            h_grads: list[torch.Tensor] = []
+            total_loss = torch.tensor(0.0, device=h.device)
+            head_grad_norms: list[float] = []
+            for chunk in chunks:
+                chunk = chunk.contiguous().detach().requires_grad_(True)
+                out = model.head(chunk)
+                loss = out.sum()
+                total_loss += loss.detach()
+                loss.backward()
+                h_grads.append(chunk.grad.detach())
+                head_grad = model.head.weight.grad
+                if isinstance(head_grad, DTensor):
+                    head_grad = head_grad.full_tensor()
+                head_grad_norms.append(head_grad.norm().item())
+            # Verify gradients actually accumulated across chunks
+            for i in range(1, len(head_grad_norms)):
+                self.assertGreater(
+                    head_grad_norms[i],
+                    head_grad_norms[i - 1],
+                    f"head.weight.grad did not grow from chunk {i - 1} to {i}, "
+                    f"gradient accumulation may be broken",
+                )
+            h.backward(torch.cat(h_grads, dim=1))
+            grads = {}
+            for name, param in model.named_parameters():
+                self.assertIsNotNone(param.grad, f"grad is None for {name}")
+                if isinstance(param.grad, DTensor):
+                    grads[name] = param.grad.full_tensor().clone()
+                else:
+                    grads[name] = param.grad.clone()
+            return total_loss, grads
+
+        torch.manual_seed(42)
+        tokens = torch.randint(0, vocab_size, (2, 16), device=device_type.type)
+
+        # Reference: plain model, chunked forward, all-reduce grads
+        torch.manual_seed(42)
+        ref_model = ChunkedHeadModel(dim, vocab_size, weight_tying).to(device_type)
+        with torch.no_grad():
+            for param in ref_model.parameters():
+                dist.broadcast(param, src=0)
+        ref_optim = torch.optim.Adam(ref_model.parameters(), lr=1e-2)
+
+        # Test: grouped FSDP with chunked forward.
+        # With weight tying, embed and head share a weight and must be in the
+        # same FSDP group — mirrors torchtitan's
+        # fully_shard([tok_embeddings, output]).
+        torch.manual_seed(42)
+        model = ChunkedHeadModel(dim, vocab_size, weight_tying).to(device_type)
+        with torch.no_grad():
+            for param in model.parameters():
+                dist.broadcast(param, src=0)
+        if weight_tying:
+            fully_shard(model.body, **fsdp_kwargs)
+            fully_shard([model.embed, model.norm, model.head], **fsdp_kwargs)
+        else:
+            fully_shard(model.embed, **fsdp_kwargs)
+            fully_shard(model.body, **fsdp_kwargs)
+            fully_shard([model.norm, model.head], **fsdp_kwargs)
+        fully_shard(model, **fsdp_kwargs)
+        optim = torch.optim.Adam(model.parameters(), lr=1e-2)
+
+        for iter_idx in range(10):
+            # Reference: chunked forward + backward, all-reduce grads
+            ref_loss, ref_grads = _run_chunked(ref_model)
+            for param in ref_model.parameters():
+                if param.grad is not None:
+                    dist.all_reduce(param.grad)
+                    param.grad.div_(self.world_size)
+
+            # Test: chunked forward + backward with grouped FSDP
+            fsdp_loss, grads = _run_chunked(model)
+
+            # Compare losses
+            self.assertEqual(
+                ref_loss, fsdp_loss, msg=f"Loss mismatch at iter {iter_idx}"
+            )
+
+            # Compare gradients
+            for name in ref_grads:
+                self.assertEqual(
+                    grads[name],
+                    ref_grads[name],
+                    msg=f"Gradient mismatch for {name} at iter {iter_idx}",
+                )
+
+            for _optim in (ref_optim, optim):
+                _optim.step()
+                _optim.zero_grad(set_to_none=(iter_idx % 2 == 0))
+
+            # Compare parameters after optimizer step
+            for (ref_name, ref_param), (_, fsdp_param) in zip(
+                ref_model.named_parameters(), model.named_parameters()
+            ):
+                fsdp_full = (
+                    fsdp_param.full_tensor()
+                    if isinstance(fsdp_param, DTensor)
+                    else fsdp_param
+                )
+                self.assertEqual(
+                    fsdp_full,
+                    ref_param,
+                    msg=f"Param mismatch for {ref_name} at iter {iter_idx}",
+                )
+
+    @skip_if_lt_x_gpu(2, allow_cpu=True)
     def test_double_forward_with_nested_fsdp_and_checkpoint(self):
         """
         Tests that calling model.forward() twice before backward() works correctly

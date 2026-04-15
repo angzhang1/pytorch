@@ -313,6 +313,18 @@ class FSDPState(_State):
         output = self._register_pre_backward_hook(output)
         self._training_state = TrainingState.IDLE
         if self._state_ctx.iter_forward_root is self:
+            for state in self._state_ctx.all_states:
+                if state is not self and state._modules_to_run_forward:
+                    # A grouped fully_shard's forward did not run all
+                    # modules (e.g. chunked loss skipping lm_head).
+                    # Force-complete the group's post-forward so that
+                    # params are resharded and backward hooks are
+                    # registered on the root output.
+                    state._modules_to_run_forward.clear()
+                    for fsdp_param_group in state._fsdp_param_groups:
+                        fsdp_param_group.post_forward(module, input, output)
+                    output = state._register_pre_backward_hook(output)
+                    state._training_state = TrainingState.IDLE
             if all_gather_state := self._comm_ctx.all_gather_state:
                 # Free the last all-gather result if needed; refer to
                 # [Note: Overlapping all-gather copy-in and all-gather]
@@ -364,6 +376,13 @@ class FSDPState(_State):
                     state._finalize_backward()
             if self._state_ctx.is_last_backward:
                 self._comm_ctx.post_forward_order.clear()
+                # Clear iter_forward_root in case a grouped module's
+                # post-forward never fired (e.g. partial group forward
+                # followed by standalone calls in a chunk loop), leaving
+                # iter_forward_root stale. Not gated to grouped modules
+                # since this is a no-op in the normal case (_post_forward
+                # already cleared it).
+                self._state_ctx.iter_forward_root = None
                 # Catch the last module's RS states that no subsequent
                 # module's group N-1 wait will clear.
                 for rs_state in self._comm_ctx.reduce_scatter_states:
@@ -421,18 +440,20 @@ def _register_group_forward_hooks(
     modules_to_run: set[nn.Module],
 ):
     """
-    Registers group forward pre and post-hooks. The pre-hook runs upon the
-    first module pre-forward, and the post-hook runs upon the last. If at least
-    one module does not run forward, then the post-hook does not run.
+    Registers group forward pre and post-hooks. The pre-hook runs on every
+    module pre-forward (unshard is guarded by physical state in
+    ``FSDPParamGroup.pre_forward``). The post-hook runs upon the last module
+    to complete. If at least one module does not run forward, then the
+    post-hook does not run; root post-forward cleanup handles this case.
     """
     modules_set = set(modules)
 
     @_dynamo_disable
     @functools.wraps(pre_hook)
     def wrapped_pre_hook(*args: Any, **kwargs: Any):
-        if len(modules_to_run) == 0:  # first to run
+        if len(modules_to_run) == 0:
             modules_to_run.update(modules_set)
-            return pre_hook(*args, **kwargs)
+        return pre_hook(*args, **kwargs)
 
     @_dynamo_disable
     def get_wrapped_post_hook(module: nn.Module):
