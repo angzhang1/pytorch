@@ -4489,7 +4489,9 @@ class CppKernelProxy(CppKernel):
                     and (
                         tiling_select.mask_op_count
                         + sum(tiling_select.non_contig_indexing_op_counter.values())
-                    ) / op_num > 0.12
+                    )
+                    / op_num
+                    > 0.12
                 ):
                     hint_tail_size = V.graph.sizevars.optimization_hint(tail_size)
                     return V.graph.sizevars.guard_or_false(
@@ -4574,7 +4576,7 @@ class CppKernelProxy(CppKernel):
                 }
                 tail_kernel = []
                 if config.cpp.enable_loop_tail_vec and _tail_vec_worthwhile(
-                        inner_tail_size, tiling_factors[0]
+                    inner_tail_size, tiling_factors[0]
                 ):
                     for outer_r, inner_r in (
                         ("main", "tail"),
