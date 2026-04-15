@@ -1,0 +1,173 @@
+name: Claude Distributed Triage Daily Email
+
+on:
+  schedule:
+    # Daily at 12pm PT (7pm UTC, 8pm UTC during DST) — 3 hours after cron sweep
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+    inputs:
+      manifest_date:
+        description: "Date to summarize (YYYY-MM-DD, defaults to today)"
+        type: string
+        required: false
+
+jobs:
+  send-summary:
+    if: github.repository == 'pytorch/pytorch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: bedrock
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_claude_code
+          aws-region: us-east-1
+
+      - name: Download manifest and build summary
+        id: summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET_DATE="${{ inputs.manifest_date || '' }}"
+          if [ -z "$TARGET_DATE" ]; then
+            TARGET_DATE=$(date -u +%Y-%m-%d)
+          fi
+
+          S3_BUCKET="ossci-raw-job-status"
+          MANIFEST_KEY="distributed-triage-logs/manifest-${TARGET_DATE}.jsonl"
+          MANIFEST_FILE=$(mktemp)
+
+          echo "Downloading manifest for ${TARGET_DATE}..."
+          if ! aws s3 cp "s3://${S3_BUCKET}/${MANIFEST_KEY}" "$MANIFEST_FILE" 2>/dev/null; then
+            echo "No manifest found for ${TARGET_DATE}. Nothing to report."
+            echo "has_content=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TOTAL=$(wc -l < "$MANIFEST_FILE")
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Manifest is empty. Nothing to report."
+            echo "has_content=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_content=true" >> "$GITHUB_OUTPUT"
+          echo "date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+
+          # Count by source
+          PHASE1_COUNT=$(grep -c '"phase1-auto"' "$MANIFEST_FILE" || echo 0)
+          LLM_COUNT=$(grep -c '"llm-triage"' "$MANIFEST_FILE" || echo 0)
+
+          # Get triage review issues (bot flagged for human attention)
+          TRIAGE_REVIEW_ISSUES=$(gh issue list \
+            --repo pytorch/pytorch \
+            --label "oncall: distributed" \
+            --label "triage review" \
+            --state open \
+            --limit 50 \
+            --json number,title \
+            --jq '.[] | "  - #\(.number): \(.title)"')
+
+          # Get remaining untriaged count
+          REMAINING=$(gh issue list \
+            --repo pytorch/pytorch \
+            --label "oncall: distributed" \
+            --state open \
+            --limit 1 \
+            --json totalCount \
+            --jq '.[0].totalCount // 0' 2>/dev/null || echo "unknown")
+
+          TRIAGED_COUNT=$(gh issue list \
+            --repo pytorch/pytorch \
+            --label "oncall: distributed" \
+            --label "ptd-bot-triaged" \
+            --state open \
+            --limit 1 \
+            --json totalCount \
+            --jq '.[0].totalCount // 0' 2>/dev/null || echo "unknown")
+
+          # Build summary body
+          SUMMARY_FILE=$(mktemp)
+          cat > "$SUMMARY_FILE" << SUMMARY_EOF
+          Distributed Triage Summary — ${TARGET_DATE}
+
+          Bot-Triaged Today: ${TOTAL} issues
+            - Auto-labeled (had module label): ${PHASE1_COUNT}
+            - LLM-triaged: ${LLM_COUNT}
+
+          SUMMARY_EOF
+
+          # Add LLM-triaged details
+          if [ "$LLM_COUNT" -gt 0 ]; then
+            echo "LLM-Triaged Issues:" >> "$SUMMARY_FILE"
+            grep '"llm-triage"' "$MANIFEST_FILE" | while IFS= read -r line; do
+              ISSUE_NUM=$(echo "$line" | jq -r '.issue')
+              TITLE=$(echo "$line" | jq -r '.title')
+              LABELS=$(echo "$line" | jq -r '.labels | join(", ")')
+              echo "  - #${ISSUE_NUM}: ${TITLE}" >> "$SUMMARY_FILE"
+              echo "    Labels: ${LABELS}" >> "$SUMMARY_FILE"
+            done
+            echo "" >> "$SUMMARY_FILE"
+          fi
+
+          # Add triage review section
+          if [ -n "$TRIAGE_REVIEW_ISSUES" ]; then
+            echo "Needs Human Review (triage review):" >> "$SUMMARY_FILE"
+            echo "$TRIAGE_REVIEW_ISSUES" >> "$SUMMARY_FILE"
+            echo "" >> "$SUMMARY_FILE"
+          else
+            echo "Needs Human Review: None" >> "$SUMMARY_FILE"
+            echo "" >> "$SUMMARY_FILE"
+          fi
+
+          # Add queue status
+          echo "Queue Status:" >> "$SUMMARY_FILE"
+          echo "  - Total open with oncall:distributed: ${REMAINING}" >> "$SUMMARY_FILE"
+          echo "  - Marked ptd-bot-triaged: ${TRIAGED_COUNT}" >> "$SUMMARY_FILE"
+
+          # Store summary for email step
+          # Use a delimiter to handle multiline output
+          {
+            echo "body<<SUMMARY_DELIM"
+            cat "$SUMMARY_FILE"
+            echo "SUMMARY_DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "=== Summary ==="
+          cat "$SUMMARY_FILE"
+
+      - name: Look up current oncall
+        if: steps.summary.outputs.has_content == 'true'
+        id: oncall
+        run: |
+          # TODO: Replace with dynamic oncall rotation lookup
+          ONCALL_EMAIL="anshulsi@meta.com"
+          echo "email=$ONCALL_EMAIL" >> "$GITHUB_OUTPUT"
+          echo "Oncall email: $ONCALL_EMAIL"
+
+      - name: Send email via SES
+        if: steps.summary.outputs.has_content == 'true'
+        run: |
+          TARGET_DATE="${{ steps.summary.outputs.date }}"
+          ONCALL_EMAIL="${{ steps.oncall.outputs.email }}"
+          SUBJECT="[PTD Triage Bot] Daily Summary — ${TARGET_DATE}"
+
+          BODY='${{ steps.summary.outputs.body }}'
+
+          aws ses send-email \
+            --from "pytorch-triage-bot@pytorch.org" \
+            --destination "ToAddresses=[\"${ONCALL_EMAIL}\"]" \
+            --message "Subject={Data=\"${SUBJECT}\"},Body={Text={Data=$(echo "$BODY" | jq -Rs .)}}" \
+            --region us-east-1
+
+          echo "Email sent to ${ONCALL_EMAIL}"
