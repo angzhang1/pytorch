@@ -85,6 +85,9 @@ class CacheSizeRelevantForFrame:
     # Number of CacheEntry objects having same ID_MATCH'd objects as given frame.
     num_cache_entries_with_same_id_matched_objs: int = 0
 
+    # Whether this compile call has isolate_recompiles=True
+    isolate_recompiles: bool = False
+
     def will_compilation_exceed(self, limit: int) -> bool:
         # Checks if a compilation will exceed the given limit (that's why >=).
         return (
@@ -133,20 +136,22 @@ def _has_same_id_matched_objs(frame: DynamoFrameType, cache_entry: Any) -> bool:
 
 
 def compute_cache_size(
-    frame: DynamoFrameType, cache_entry: Any
+    frame: DynamoFrameType, cache_entries: list[Any]
 ) -> CacheSizeRelevantForFrame:
-    # Walk the linked list to calculate the cache size
+    # cache_entries is already scoped to a single isolate_recompiles region.
+    # We intentionally count only that region's entries — the default region's
+    # entries are not included, so isolated regions get their full recompile
+    # budget independently.
     num_cache_entries = 0
     num_cache_entries_with_same_id_matched_objs = 0
 
-    while cache_entry:
+    for cache_entry in cache_entries:
         num_cache_entries += 1
         # Track the number of cache entries having same ID_MATCH'd objects as
         # that of frame.f_locals. This will be used later to compare against the
         # recompile_limit.
         if _has_same_id_matched_objs(frame, cache_entry):
             num_cache_entries_with_same_id_matched_objs += 1
-        cache_entry = cache_entry.next
 
     return CacheSizeRelevantForFrame(
         num_cache_entries, num_cache_entries_with_same_id_matched_objs
