@@ -2,7 +2,6 @@
 
 from contextlib import contextmanager
 from importlib import import_module
-from unittest import skipIf
 
 import torch
 import torch._prims_common as utils
@@ -11,16 +10,11 @@ from torch._inductor import config
 from torch._inductor.compiler_bisector import CompilerBisector
 from torch._inductor.test_case import TestCase
 from torch.library import _scoped_library, Library
-from torch.testing._internal.inductor_utils import HAS_XPU_AND_TRITON
 from torch.testing._internal.triton_utils import requires_gpu_and_triton
 
 
 device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
-
-
 aten = torch.ops.aten
-
-
 f32 = torch.float32
 i64 = torch.int64
 i32 = torch.int32
