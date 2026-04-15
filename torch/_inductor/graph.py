@@ -2105,13 +2105,14 @@ class GraphLowering(torch.fx.Interpreter):
                 ):
                     _data = _data.data
 
+                _num_effective_users = self._count_effective_users(n)
                 if isinstance(_data, StorageBox) and _data.should_realize_on_reuse(
-                    self._count_effective_users(n)
+                    _num_effective_users
                 ):
                     result = maybe_apply_channels_last_stride_order(result, n)
 
                 # TODO(jansel): introduce a store vs inline choice
-                result.mark_reuse(self._count_effective_users(n))
+                result.mark_reuse(_num_effective_users)
 
             # Realize if the IRNode already has accumulated lots of reads
             if isinstance(result, TensorBox) and result.has_exceeded_max_reads():
