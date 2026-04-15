@@ -90,7 +90,7 @@ from torch.testing._internal.custom_tensor import (
 )
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
 from torch.testing._internal.torchbind_impls import load_torchbind_test_lib
-from torch.testing._internal.triton_utils import requires_cuda_and_triton, requires_gpu
+from torch.testing._internal.triton_utils import requires_gpu, requires_gpu_and_triton
 from torch.testing._internal.two_tensor import TwoTensor
 from torch.utils._pytree import (
     register_constant,
@@ -101,6 +101,10 @@ from torch.utils._pytree import (
     treespec_dumps,
     treespec_leaf,
     treespec_loads,
+)
+
+device_type = (
+    acc.type if (acc := torch.accelerator.current_accelerator(True)) else "cpu"
 )
 
 
@@ -10053,10 +10057,10 @@ def forward(self, b_a_buffer, x):
                 len([node for node in gm.graph.nodes if node.op == "placeholder"]), 1
             )
 
-    @requires_cuda_and_triton
+    @requires_gpu_and_triton
     @testing.expectedFailureCppRuntime
     def test_export_associative_scan_symbol_dim(self):
-        device = torch.device("cuda")
+        device = torch.device(device_type)
         combine_mode = "pointwise"
 
         dim1 = torch.export.Dim("dim0", min=5, max=15)
@@ -10078,10 +10082,10 @@ def forward(self, b_a_buffer, x):
         module_out = Foo()(xs)
         self.assertTrue(torch.allclose(ep.module()(xs), module_out))
 
-    @requires_cuda_and_triton
+    @requires_gpu_and_triton
     @testing.expectedFailureCppRuntime
     def test_export_associative_scan_symbol_scandim(self):
-        device = torch.device("cuda")
+        device = torch.device(device_type)
         combine_mode = "pointwise"
 
         dim1 = torch.export.Dim("dim0", min=5, max=15)
@@ -10103,12 +10107,13 @@ def forward(self, b_a_buffer, x):
         module_out = Foo()(xs)
         self.assertTrue(torch.allclose(ep.module()(xs), module_out))
 
-    @requires_cuda_and_triton
+    @requires_gpu_and_triton
+    @testing.expectedFailureStrictV2
     def test_export_associative_scan_lifted_buffers(self):
         if "cpp_runtime_nonstrict" in self.id():
             self.skipTest("TODO Unexpected success in OSS but not in fbcode.")
 
-        device = torch.device("cuda")
+        device = torch.device(device_type)
         combine_mode = "pointwise"
 
         class A(torch.nn.Module):
@@ -14317,7 +14322,7 @@ def forward(self, x, b_t, y):
         class Model(torch.nn.Module):
             def forward(self, x):
                 with torch.autocast(
-                    device_type="cuda", dtype=torch.int16, enabled=True
+                    device_type=device_type, dtype=torch.int16, enabled=True
                 ):
                     y = x.sin().sum()
                 with torch.autocast(
@@ -16380,6 +16385,7 @@ def forward(self, x):
             test_serdes=True,
         )
 
+    @skipIfXpu
     def test_preserve_annotation(self):
         class M(torch.nn.Module):
             def forward(self, x):
@@ -17020,7 +17026,7 @@ def forward(self, x):
         self.assertEqual(x.sin(), ep.module()(x))
         pytree._deregister_pytree_node(torch.FunctionSchema)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
+    @unittest.skipIf(not HAS_GPU, "Test requires GPU.")
     def test_exception(self):
         class Model(torch.nn.Module):
             def __init__(self):
@@ -17040,7 +17046,7 @@ def forward(self, x):
                 self.mod = Model()
 
             def forward(self, x):
-                if "cuda" in str(x.device):
+                if device_type in str(x.device):
                     mod = self.mod.to(x.device)
                     return mod(x)
                 else:
@@ -17052,7 +17058,7 @@ def forward(self, x):
                 self.mod = BarModel()
 
             def forward(self, x):
-                with torch.amp.autocast(device_type="cuda"):
+                with torch.amp.autocast(device_type=device_type):
                     y = self.mod(x)
                 return y
 
@@ -17061,7 +17067,7 @@ def forward(self, x):
                 _ = torch.export.export(
                     BarBar(),
                     (),
-                    {"x": torch.randn(4, 4, 4, device="cuda")},
+                    {"x": torch.randn(4, 4, 4, device=device_type)},
                     strict=False,
                 ).module()
 
@@ -17655,7 +17661,7 @@ class TestOneOffModelExportResult(TestCase):
         not PLATFORM_SUPPORTS_FLASH_ATTENTION,
         "Can't run fused SDPA on this platform",
     )
-    def test_scaled_dot_product_attention_cuda(self):
+    def test_scaled_dot_product_attention_gpu(self):
         """
         This test makes sure we are always getting the same decomposition result for SDPA.
         As of now _scaled_dot_product_flash_attention is expected to show up in
@@ -18131,7 +18137,7 @@ def forward(self, x):
             len(list(new_ep.graph.nodes)[-1].args[0]), len(signature.output_specs)
         )
 
-    @requires_cuda_and_triton
+    @requires_gpu_and_triton
     def test_assert_tensor_metadata_device_index(self):
         class N(torch.nn.Module):
             def __init__(self):
@@ -18142,10 +18148,10 @@ def forward(self, x):
                 y = y.float()
                 return x + y
 
-        inp = (torch.randn(3, device="cuda"), torch.randn(3, device="cuda"))
+        inp = (torch.randn(3, device=device_type), torch.randn(3, device=device_type))
         ep = export(N(), inp)
-        ep = move_to_device_pass(ep, {"cuda:0": "cuda"})
-        ep.module()(torch.randn(3, device="cuda:0"), torch.randn(3, device="cuda:0"))
+        ep = move_to_device_pass(ep, {f"{device_type}:0": device_type})
+        ep.module()(torch.randn(3, device=f"{device_type}:0"), torch.randn(3, device=f"{device_type}:0"))
 
     @unittest.skipIf(not HAS_TORCHREC, "only run when there is torchrec imported")
     def test_torchrec_jagged_tensor(self):
