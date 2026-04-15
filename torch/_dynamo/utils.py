@@ -2795,21 +2795,29 @@ def specialize_symnode(arg: Any) -> Any:
     from .variables import ConstantVariable, LazyVariableTracker, SymNodeVariable
 
     # Guard and specialize
-    if isinstance(arg, LazyVariableTracker) and not arg.is_realized():
-        # Find if the arg would be realized as SymNodeVariable later on. If yes,
-        # realize it and specialize. Else return the arg.
+    if isinstance(arg, LazyVariableTracker):
+        if not arg.is_realized():
+            # Find if the arg would be realized as SymNodeVariable later on. If yes,
+            # realize it and specialize. Else return the arg.
 
-        source = arg.original_source()
-        value = arg.original_value()
+            source = arg.original_source()
+            value = arg.original_value()
 
-        is_symnode_vt = is_torch_sym(value) or (
-            not config.specialize_int
-            and type(value) is int
-            and not is_int_specialization_case(value, source)
-        )
+            # ComputedLazyConstantVariable has no source, so it can't be a symnode
+            if source is None:
+                return arg
 
-        if not is_symnode_vt:
-            return arg
+            is_symnode_vt = is_torch_sym(value) or (
+                not config.specialize_int
+                and type(value) is int
+                and not is_int_specialization_case(value, source)
+            )
+
+            if not is_symnode_vt:
+                return arg
+
+        # Realize to get the underlying variable (handles both realized and unrealized)
+        arg = arg.realize()
 
     if isinstance(arg, SymNodeVariable):
         return ConstantVariable.create(arg.evaluate_expr())
@@ -2829,6 +2837,20 @@ def guard_if_dyn(arg: Any) -> Any:
 
 def check_constant_args(args: Iterable[Any], kwargs: Mapping[Any, Any]) -> bool:
     return all(x.is_python_constant() for x in itertools.chain(args, kwargs.values()))
+
+
+def check_args_peekable_as_constant(
+    args: Iterable[Any], kwargs: Mapping[Any, Any]
+) -> bool:
+    """Check if all args can be peeked as constants, including unrealized lazy constants.
+
+    Unlike check_constant_args (which uses is_python_constant and returns False
+    for containers with unrealized lazy items), this uses try_peek_constant to
+    check peekability without triggering realization. Use this when constant
+    folding is desired even if args contain lazy constants (e.g., Enum class
+    creation, namedtuple type creation).
+    """
+    return all(x.try_peek_constant()[0] for x in itertools.chain(args, kwargs.values()))
 
 
 def check_unspec_python_args(args: Iterable[Any], kwargs: Mapping[Any, Any]) -> bool:
